@@ -1,0 +1,10 @@
+torch>=2.0.0
+torch-geometric
+e3nn
+rdkit
+matplotlib
+tqdm
+pandas
+scikit-learn
+flwr
+pyyaml

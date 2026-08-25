@@ -2,7 +2,7 @@
 
 ## 3D Equivariant Graph Diffusion for Molecular Generation
 
-This research repository explores an extension of GraphGANFed (Manu et al., 2024) from 2D graph-matrix generation to centralized 3D molecular diffusion. The current Phase 1 implementation trains an E(3)-equivariant graph neural network to predict centered Gaussian noise on QM9 atomic coordinates.
+This research repository extends GraphGANFed (Manu et al., 2024) from 2D graph-matrix generation to 3D molecular diffusion. It trains an E(3)-equivariant graph neural network (EGNN) as the denoiser of a DDPM over QM9 atomic coordinates and atom types, evaluates generated molecules with MOSES-style chemistry metrics, and reproduces GraphGANFed's federated protocol (weighted FedAvg → FedProx, IID vs non-IID by molecular formula) with a diffusion generator.
 
 ## Motivation
 
@@ -27,7 +27,8 @@ Phases 1.5–3 of the implementation plan (`.idea/03_implementation_plan.md`) ar
 | Generator | MLP within a WGAN-GP pipeline | EGNN denoiser within a DDPM pipeline |
 | Geometry | Topological only | Coordinate-aware and translation/rotation equivariant |
 | Optimization | Adversarial training | Noise-prediction MSE |
-| Distribution setting | Federated, non-IID focus | Centralized QM9 baseline in Phase 1 |
+| Distribution setting | Federated, non-IID focus | Federated (IID + non-IID) with a centralized QM9 baseline |
+| Personalization | Not studied | FedProx proximal term + FedPer-style personal type/bond heads |
 
 ## Project Layout
 
@@ -35,7 +36,7 @@ Phases 1.5–3 of the implementation plan (`.idea/03_implementation_plan.md`) ar
 3D-Molecule-Diffusion/
 |-- checkpoints/           # Model checkpoints; generated files are ignored
 |-- configs/
-|   |-- central.yaml       # Centralized Phase 1.5 training configuration
+|   |-- central.yaml       # Centralized training configuration
 |   |-- fed_iid.yaml       # Federated IID / FedAvg configuration
 |   `-- fed_niid.yaml      # Federated non-IID / FedProx configuration
 |-- data/                  # Downloaded QM9 + persisted partitions; ignored
@@ -55,8 +56,10 @@ Phases 1.5–3 of the implementation plan (`.idea/03_implementation_plan.md`) ar
 |   `-- utils/
 |       |-- evaluation.py  # MOSES-style metric suite + mol reconstruction
 |       `-- graph.py       # Vectorized k-NN graph construction
-|-- tests/                 # Phase 1.5–3 unit tests
+|-- tests/                 # Unit tests for all phases
 |-- generate_and_eval.py   # End-to-end generation + metric evaluation
+|-- CODE_OF_CONDUCT.md     # Contributor Covenant code of conduct
+|-- CONTRIBUTING.md        # Contribution guide
 |-- README.md
 |-- requirements.txt
 |-- setup_env.ps1          # Windows PowerShell setup
@@ -119,16 +122,24 @@ The check reports the Torch version, CUDA device details when visible, imports P
 
 ## Training
 
-Start the centralized Phase 1 loop from the repository root:
+### Centralized
 
 ```bash
 conda activate bio_diffusion
-python train.py
+python train.py --config configs/central.yaml
 ```
 
-The default run uses 50 epochs and a batch size of 32. For each batch it samples one diffusion timestep per molecule, adds per-molecule centered Gaussian noise, builds a coordinate k-NN graph, predicts the spatial noise with the EGNN, and optimizes mean squared error.
+For each batch the trainer samples one diffusion timestep per molecule, adds per-molecule centered Gaussian noise to coordinates and categorical noise to atom types, builds a coordinate k-NN graph, predicts the spatial noise with the timestep-conditioned EGNN, and optimizes the joint loss `L = L_pos + λ_type·L_type` with an 80:10:10 train/val/test split, early stopping, and checkpointing.
 
-The training script includes a pure-PyTorch k-NN fallback, so it does not require the optional `pyg-lib` binary backend. This is useful for Windows and CPU environments where a matching PyG extension wheel is unavailable.
+The k-NN construction uses a vectorized pure-PyTorch implementation, so no optional `pyg-lib` binary backend is required.
+
+### Generation & evaluation
+
+```bash
+python generate_and_eval.py --checkpoint checkpoints/best.pt --num_samples 1000
+```
+
+Samples molecules via DDIM (or full DDPM), reconstructs RDKit molecules with valence-aware bond assignment, and reports Validity, Uniqueness, Novelty, IntDiv_p, QED, LogP, and SNN. Additional flags: `--ddim_steps`, `--eta`, `--batch_size`, `--seed`, `--device`.
 
 ## Federated training
 
@@ -149,13 +160,34 @@ Configuration knobs (see the YAML files):
 
 Per-round server loss, per-client losses, validation loss, and periodic DDIM sample validity/uniqueness are logged to `history.json` in the output directory.
 
+## Testing
+
+Run the full unit test suite (noise centering, rotation equivariance, categorical posteriors, partitioning invariants, weighted FedAvg arithmetic, FedProx/personalization behavior, multi-objective losses):
+
+```bash
+python -m pytest tests/ -q
+```
+
+## Community
+
+- **Contributing** — see [CONTRIBUTING.md](CONTRIBUTING.md) for environment setup, code conventions, and pull-request guidelines.
+- **Code of Conduct** — this project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); be respectful and constructive in all project spaces.
+
 ## Research Roadmap
 
-1. ~~Add a reverse DDPM sampler~~ — done (`src/sampling.py`).
-2. ~~Add chemical reconstruction and evaluation~~ — done (`src/utils/evaluation.py`, `generate_and_eval.py`).
-3. ~~Add molecule-size and atom-type conditioning~~ — done (joint type diffusion + size histogram sampling).
-4. ~~Integrate Flower for simulated federated clients~~ — done (`src/fed/`, `fed_train.py`; Flower-compatible client provided).
-5. ~~FedProx and personal heads~~ — done; remaining work is full-scale experiment sweeps and the results write-up.
+Completed:
+
+1. Reverse DDPM + DDIM samplers (`src/sampling.py`).
+2. Chemical reconstruction and MOSES-style evaluation (`src/utils/evaluation.py`, `generate_and_eval.py`).
+3. Molecule-size and atom-type conditioning (joint categorical diffusion + size-histogram sampling).
+4. Federated training with Flower-compatible clients and IID/non-IID partitions (`src/fed/`, `fed_train.py`).
+5. FedProx, FedPer-style personal heads, and multi-objective λ₂/λ₃ losses (`src/objectives.py`).
+
+Remaining:
+
+6. Full-scale experiment sweeps: K ∈ {1, 2, 4, 7} × {IID, non-IID} × μ ∈ {0, 0.01, 0.1, 1.0} and the Validity–Uniqueness Pareto plot over (λ₂, λ₃).
+7. Results write-up mirroring the paper's experimental axes, including the diffusion-vs-GAN mode-collapse analysis.
+8. Optional stretch: classifier-free guidance conditioned on QED-bucket / uniqueness-proxy.
 
 ## References
 
@@ -166,4 +198,4 @@ Per-round server loss, per-client losses, validation loss, and periodic DDIM sam
 
 ## License
 
-No license file has been added yet. Add a project license before distributing this research code publicly or incorporating it into another project.
+No license file has been added yet. Add a project license before distributing this research code publicly or incorporating it into another project (see the note in [CONTRIBUTING.md](CONTRIBUTING.md)).

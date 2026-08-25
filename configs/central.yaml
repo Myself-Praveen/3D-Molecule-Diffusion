@@ -1,0 +1,35 @@
+# Centralized Phase 1.5 training configuration (80:10:10 QM9 split).
+# See .idea/03_implementation_plan.md Step 1.4.
+
+seed: 42
+
+data:
+  root: data
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10        # C, N, O, F, Br, P, S, Cl, I + padding(*)
+  node_dim: 64
+  edge_dim: 64
+  num_layers: 4
+  time_dim: 32
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 100
+  batch_size: 32
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  kNN: 4
+  type_loss_weight: 0.5   # lambda in L = L_pos + lambda * L_type
+  patience: 10            # early-stopping patience on validation loss
+
+checkpoint:
+  dir: checkpoints
+  save_every: 5           # save every N epochs

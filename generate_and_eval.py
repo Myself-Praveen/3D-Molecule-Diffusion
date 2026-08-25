@@ -1,0 +1,192 @@
+"""End-to-end generation and MOSES-style evaluation (Step 1.4 acceptance).
+
+Usage:
+    python generate_and_eval.py --checkpoint checkpoints/best.pt \
+                                --num_samples 1000 \
+                                --ddim_steps 50 \
+                                --config configs/central.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import torch
+import yaml
+from rdkit import Chem
+
+from src.dataset import load_qm9
+from src.models.diffusion import CenteredDDPM, TypeDDPM
+from src.models.egnn import EquivariantGenerator
+from src.sampling import sample_molecules
+from src.utils.evaluation import coords_and_types_to_mol, evaluate, print_metrics
+
+# QM9 atomic numbers present in the dataset.
+QM9_ATOMIC_NUMBERS = [1, 6, 7, 8, 9, 15, 16, 17, 35, 53]
+
+
+def _build_atom_count_histogram(dataset) -> list[int]:
+    """Compute per-molecule atom counts across the full QM9 dataset."""
+    counts = []
+    for data in dataset:
+        counts.append(int(data.z.size(0)))
+    return counts
+
+
+def _sample_atom_counts(histogram: list[int], n: int, rng: np.random.Generator) -> list[int]:
+    """Sample n atom counts from the empirical histogram."""
+    return rng.choice(histogram, size=n, replace=True).tolist()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate molecules and evaluate")
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to a training checkpoint (.pt)")
+    parser.add_argument("--num_samples", type=int, default=1000,
+                        help="Number of molecules to generate")
+    parser.add_argument("--ddim_steps", type=int, default=None,
+                        help="DDIM steps (None = ancestral DDPM)")
+    parser.add_argument("--eta", type=float, default=0.0,
+                        help="DDIM stochasticity (0 = deterministic)")
+    parser.add_argument("--config", type=str, default="configs/central.yaml",
+                        help="Config YAML used during training")
+    parser.add_argument("--batch_size", type=int, default=100,
+                        help="Generate in batches of this size")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default=None,
+                        help="Force device (cuda / cpu)")
+    args = parser.parse_args()
+
+    # Config
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+
+    device = torch.device(
+        args.device if args.device
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    print(f"Device: {device}")
+
+    # Load checkpoint
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    ckpt_cfg = ckpt.get("config", cfg)
+
+    model_cfg = ckpt_cfg["model"]
+    diff_cfg = ckpt_cfg["diffusion"]
+
+    model = EquivariantGenerator(
+        num_types=model_cfg["num_types"],
+        node_dim=model_cfg["node_dim"],
+        edge_dim=model_cfg["edge_dim"],
+        num_layers=model_cfg["num_layers"],
+        time_dim=model_cfg["time_dim"],
+    ).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    coord_ddpm = CenteredDDPM(
+        num_steps=diff_cfg["num_steps"],
+        beta_start=diff_cfg["beta_start"],
+        beta_end=diff_cfg["beta_end"],
+        device=device,
+    )
+    type_ddpm = TypeDDPM(
+        num_steps=diff_cfg["num_steps"],
+        beta_start=diff_cfg["beta_start"],
+        beta_end=diff_cfg["beta_end"],
+        device=device,
+    )
+
+    # Load training set for novelty / SNN baselines
+    full_dataset = load_qm9(root=ckpt_cfg["data"]["root"])
+    train_smiles: set[str] = set()
+    train_mols: list[Chem.Mol] = []
+    for data in full_dataset:
+        mol = _data_to_rdkit_mol(data)
+        if mol is not None:
+            s = Chem.MolToSmiles(mol)
+            train_smiles.add(s)
+            train_mols.append(mol)
+
+    print(f"Training set: {len(train_smiles)} unique SMILES across {len(train_mols)} molecules")
+
+    # Build atom-count histogram and sample
+    rng = np.random.default_rng(args.seed)
+    histogram = _build_atom_count_histogram(full_dataset)
+
+    all_mols: list[Chem.Mol | None] = []
+    num_batches = (args.num_samples + args.batch_size - 1) // args.batch_size
+
+    for b_idx in range(num_batches):
+        n_batch = min(args.batch_size, args.num_samples - b_idx * args.batch_size)
+        atom_counts = _sample_atom_counts(histogram, n_batch, rng)
+        total_atoms = sum(atom_counts)
+
+        print(
+            f"Batch {b_idx + 1}/{num_batches}: generating {n_batch} molecules "
+            f"({total_atoms} atoms)"
+        )
+
+        pos, z = sample_molecules(
+            model, coord_ddpm, type_ddpm,
+            torch.tensor(atom_counts, dtype=torch.long),
+            device=device,
+            ddim_steps=args.ddim_steps,
+            eta=args.eta,
+        )
+
+        # Convert each generated molecule to RDKit
+        offset = 0
+        for count in atom_counts:
+            mol_pos = pos[offset:offset + count].numpy()
+            mol_z = z[offset:offset + count].numpy()
+            # Map type indices to atomic numbers
+            # In QM9, z values are raw atomic numbers; model indices correspond
+            # to these.  We need to convert back to atomic numbers.
+            atomic_numbers = np.array(
+                [QM9_ATOMIC_NUMBERS[int(t)] if int(t) < len(QM9_ATOMIC_NUMBERS) else 1
+                 for t in mol_z]
+            )
+            mol = coords_and_types_to_mol(mol_pos, atomic_numbers)
+            all_mols.append(mol)
+            offset += count
+
+    # Evaluate
+    metrics = evaluate(all_mols, train_smiles, train_mols)
+    print()
+    print_metrics(metrics)
+
+    # Print as table for easy copy-paste
+    print("\nLaTeX row:")
+    vals = [f"{metrics[k]:.4f}" for k in ["Validity", "Uniqueness", "Novelty",
+                                            "IntDiv_p", "QED", "LogP", "SNN"]]
+    print("  & ".join(vals) + " \\\\")
+
+
+def _data_to_rdkit_mol(data) -> Chem.Mol | None:
+    """Convert a QM9 PyG Data sample to an RDKit Mol (best-effort)."""
+    try:
+        from rdkit.Chem import rdDetermineBonds
+        mol = Chem.RWMol()
+        for z_val in data.z.tolist():
+            symbol = {1: "H", 6: "C", 7: "N", 8: "O", 9: "F",
+                       15: "P", 16: "S", 17: "Cl", 35: "Br", 53: "I"
+                       }.get(int(z_val), "C")
+            mol.AddAtom(Chem.Atom(symbol))
+        # Attempt to infer bonds from 3D distances
+        pos = data.pos.numpy()
+        n_atoms = mol.GetNumAtoms()
+        for i in range(n_atoms):
+            for j in range(i + 1, n_atoms):
+                dist = float(np.linalg.norm(pos[i] - pos[j]))
+                if dist < 2.0:
+                    mol.AddBond(i, j, Chem.BondType.SINGLE)
+        Chem.SanitizeMol(mol)
+        return mol
+    except Exception:
+        return None
+
+
+if __name__ == "__main__":
+    main()

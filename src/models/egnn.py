@@ -1,19 +1,43 @@
-"""E(3)-equivariant coordinate denoiser for molecular graphs."""
+"""E(3)-equivariant denoiser for molecular graphs (Phase 1.5 EGNN v2).
+
+Changes vs Phase 1 (see .idea/02_recommendations.md):
+- Sinusoidal timestep conditioning fused into every message-passing layer.
+- Zero-initialized final coordinate-update MLP so the untrained denoiser
+  starts as the identity (Rec A2).
+- Joint atom-type diffusion head (Rec B2 / Step 1.3).
+- Pairwise bond-type head for post-sampling chemistry reconstruction (Rec B3).
+"""
 
 from __future__ import annotations
+
+import math
 
 import torch
 from torch import nn
 from torch_geometric.nn import MessagePassing
 
+BOND_CLASSES = 5  # none, single, double, triple, aromatic
+
+
+def timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
+    """Sinusoidal diffusion-timestep embedding of shape (len(t), dim)."""
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(10000.0)
+        * torch.arange(half, dtype=torch.float32, device=t.device)
+        / max(half - 1, 1)
+    )
+    args = t.to(torch.float32).unsqueeze(-1) * freqs.unsqueeze(0)
+    return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+
 
 class EGNNLayer(MessagePassing):
     """One message-passing layer with equivariant coordinate updates."""
 
-    def __init__(self, node_dim: int, edge_dim: int) -> None:
+    def __init__(self, node_dim: int, edge_dim: int, time_dim: int) -> None:
         super().__init__(aggr="mean")
         self.edge_mlp = nn.Sequential(
-            nn.Linear(node_dim * 2 + 1, edge_dim),
+            nn.Linear(node_dim * 2 + 1 + time_dim, edge_dim),
             nn.SiLU(),
             nn.Linear(edge_dim, edge_dim),
         )
@@ -23,18 +47,27 @@ class EGNNLayer(MessagePassing):
             nn.Linear(edge_dim, 1),
         )
         self.node_mlp = nn.Sequential(
-            nn.Linear(node_dim + edge_dim, node_dim),
+            nn.Linear(node_dim + edge_dim + time_dim, node_dim),
             nn.SiLU(),
             nn.Linear(node_dim, node_dim),
         )
+        # Zero-init the final coordinate update: the untrained network is the
+        # identity map, so predicted noise starts near zero (Rec A2).
+        nn.init.zeros_(self.coord_mlp[-1].weight)
+        nn.init.zeros_(self.coord_mlp[-1].bias)
 
     def forward(
-        self, h: torch.Tensor, pos: torch.Tensor, edge_index: torch.Tensor
+        self,
+        h: torch.Tensor,
+        pos: torch.Tensor,
+        edge_index: torch.Tensor,
+        t_emb: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         row, col = edge_index
         coord_diff = pos[row] - pos[col]
         radial = coord_diff.square().sum(dim=-1, keepdim=True)
-        msg = self.edge_mlp(torch.cat((h[row], h[col], radial), dim=-1))
+        msg_input = torch.cat((h[row], h[col], radial, t_emb[row]), dim=-1)
+        msg = self.edge_mlp(msg_input)
 
         trans = coord_diff * self.coord_mlp(msg)
         pos_update = torch.zeros_like(pos)
@@ -45,23 +78,71 @@ class EGNNLayer(MessagePassing):
             h.size(0), msg.size(-1), dtype=msg.dtype, device=msg.device
         )
         aggregated.index_add_(0, col, msg)
-        counts = torch.bincount(col, minlength=h.size(0)).clamp_min(1).unsqueeze(-1)
+        counts = (
+            torch.bincount(col, minlength=h.size(0)).clamp_min(1).unsqueeze(-1)
+        )
         aggregated = aggregated / counts
-        updated_h = h + self.node_mlp(torch.cat((h, aggregated), dim=-1))
+        node_input = torch.cat((h, aggregated, t_emb), dim=-1)
+        updated_h = h + self.node_mlp(node_input)
         return updated_h, updated_pos
 
 
 class EquivariantGenerator(nn.Module):
-    """Predict coordinate noise from atom types and noisy 3D coordinates."""
+    """Predict coordinate noise and atom-type logits from noisy molecular state.
+
+    Returns ``(noise_pred, type_logits, node_h)``. ``node_h`` are the final
+    hidden atom embeddings, consumed by the bond head during chemistry
+    reconstruction (Step 1.4 of the implementation plan).
+    """
 
     def __init__(
-        self, node_dim: int = 16, edge_dim: int = 32, num_layers: int = 4
+        self,
+        num_types: int = 10,
+        node_dim: int = 64,
+        edge_dim: int = 64,
+        num_layers: int = 4,
+        time_dim: int = 32,
     ) -> None:
         super().__init__()
-        self.embed = nn.Embedding(10, node_dim)
-        self.layers = nn.ModuleList(
-            [EGNNLayer(node_dim, edge_dim) for _ in range(num_layers)]
+        self.num_types = num_types
+        self.time_dim = time_dim
+        self.embed = nn.Embedding(num_types, node_dim)
+        self.time_proj = nn.Sequential(
+            nn.Linear(time_dim, time_dim),
+            nn.SiLU(),
+            nn.Linear(time_dim, time_dim),
         )
+        self.layers = nn.ModuleList(
+            [EGNNLayer(node_dim, edge_dim, time_dim) for _ in range(num_layers)]
+        )
+        self.type_head = nn.Linear(node_dim, num_types)
+        self.bond_head = nn.Sequential(
+            nn.Linear(node_dim * 2 + 1, edge_dim),
+            nn.SiLU(),
+            nn.Linear(edge_dim, BOND_CLASSES),
+        )
+
+    @property
+    def output_dim(self) -> int:
+        return self.layers[0].node_mlp[-1].out_features
+
+    def encode(
+        self,
+        z: torch.Tensor,
+        pos: torch.Tensor,
+        edge_index: torch.Tensor,
+        t: torch.Tensor,
+        batch: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run message passing; returns final atom embeddings."""
+        if batch is None:
+            batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
+        t_emb = timestep_embedding(t, self.time_dim)
+        t_emb = self.time_proj(t_emb)[batch]
+        h = self.embed(z.long())
+        for layer in self.layers:
+            h, pos = layer(h, pos, edge_index, t_emb)
+        return h
 
     def forward(
         self,
@@ -69,10 +150,23 @@ class EquivariantGenerator(nn.Module):
         pos: torch.Tensor,
         edge_index: torch.Tensor,
         t: torch.Tensor,
-    ) -> torch.Tensor:
-        del t  # Reserved for timestep conditioning in the next model phase.
-        h = self.embed(z)
+        batch: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if batch is None:
+            batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
         initial_pos = pos
-        for layer in self.layers:
-            h, pos = layer(h, pos, edge_index)
-        return pos - initial_pos
+        h = self.encode(z, pos, edge_index, t, batch)
+        noise_pred = pos - initial_pos
+        return noise_pred, self.type_head(h), h
+
+    def predict_bond_logits(
+        self, h: torch.Tensor, pos: torch.Tensor, pair_index: torch.Tensor
+    ) -> torch.Tensor:
+        """Bond-type logits for candidate atom pairs ``pair_index`` (2, P).
+
+        Pair features: [h_i, h_j, squared distance] — rotation invariant.
+        """
+        row, col = pair_index
+        dist = (pos[row] - pos[col]).square().sum(dim=-1, keepdim=True)
+        pair_feats = torch.cat((h[row], h[col], dist), dim=-1)
+        return self.bond_head(pair_feats)

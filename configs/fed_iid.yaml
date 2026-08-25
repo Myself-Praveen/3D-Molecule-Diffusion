@@ -1,0 +1,48 @@
+# Federated Phase 2/3 configuration — IID partition, FedAvg.
+# See .idea/03_implementation_plan.md Steps 2.1-2.3.
+
+seed: 42
+
+data:
+  root: data
+  max_molecules: 0        # >0 subsamples QM9 for fast smoke runs
+  val_frac: 0.1           # shared global validation fraction
+
+fed:
+  num_clients: 4
+  mode: iid               # iid | niid
+  rounds: 50
+  local_epochs: 1         # E in the paper's protocol
+  proximal_mu: 0.0        # >0 enables FedProx (Step 3.1)
+  personal_heads: false   # true keeps type/bond heads local (Step 3.2B)
+  eval_every: 5
+  sample_eval_every: 10
+
+model:
+  num_types: 10
+  node_dim: 64
+  edge_dim: 64
+  num_layers: 4
+  time_dim: 32
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  batch_size: 32
+  kNN: 4
+  type_loss_weight: 0.5   # λ_type
+  valence_loss_weight: 0.0    # λ₂ soft validity penalty (Step 3.3)
+  diversity_loss_weight: 0.0  # λ₃ diversity regularizer (Step 3.3)
+
+generation:
+  num_samples: 32
+  max_atoms: 12
+  ddim_steps: 50
+
+output_dir: outputs/fed_iid
+partition_cache: data/partitions

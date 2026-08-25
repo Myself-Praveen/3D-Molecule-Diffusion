@@ -1,0 +1,48 @@
+# Federated Phase 2/3 configuration — non-IID partition (paper protocol).
+# Set fed.proximal_mu > 0 or fed.personal_heads: true for the Phase 3 variants.
+
+seed: 42
+
+data:
+  root: data
+  max_molecules: 0        # >0 subsamples QM9 for fast smoke runs
+  val_frac: 0.1           # shared global validation fraction
+
+fed:
+  num_clients: 4
+  mode: niid              # formula-based unbalanced allocation
+  rounds: 50
+  local_epochs: 1
+  proximal_mu: 0.1        # FedProx recommended under non-IID (Step 3.1)
+  personal_heads: false   # set true for FedPer-style specialization (Step 3.2B)
+  eval_every: 5
+  sample_eval_every: 10
+
+model:
+  num_types: 10
+  node_dim: 64
+  edge_dim: 64
+  num_layers: 4
+  time_dim: 32
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  batch_size: 32
+  kNN: 4
+  type_loss_weight: 0.5
+  valence_loss_weight: 0.0    # λ₂
+  diversity_loss_weight: 0.0  # λ₃
+
+generation:
+  num_samples: 32
+  max_atoms: 12
+  ddim_steps: 50
+
+output_dir: outputs/fed_niid
+partition_cache: data/partitions

@@ -1,0 +1,279 @@
+"""Shared local training/evaluation loops for federated clients.
+
+Refactored out of ``train.py`` so that both the centralized trainer and the
+Flower clients (Step 2.2) use identical logic. Supports:
+
+- Joint position + atom-type diffusion loss  L = L_pos + λ_type·L_type.
+- Multi-objective terms: soft valence penalty (λ₂) and diversity regularizer
+  (λ₃) from ``src/objectives.py`` (Step 3.3).
+- FedProx proximal term  μ/2 · ‖w − w_global‖²  added client-side (Step 3.1).
+- Personal-head training (Step 3.2B): parameters whose names contain any of
+  ``personal_prefixes`` are excluded from global aggregation.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+
+from src.models.diffusion import CenteredDDPM, TypeDDPM
+from src.models.egnn import EquivariantGenerator
+from src.objectives import diversity_regularizer, soft_valence_penalty
+from src.utils.graph import build_knn_graph
+
+# FedPer-style personal parameters: kept local, never aggregated.
+PERSONAL_PREFIXES = ("type_head", "bond_head")
+
+# Default QM9 type-index -> atomic-number map used by the valence penalty.
+TYPE_TO_Z = {0: 0, 1: 1, 2: 6, 3: 7, 4: 8, 5: 9, 6: 15, 7: 16, 8: 17, 9: 35}
+
+
+def split_global_personal(
+    state_dict: dict[str, torch.Tensor],
+    prefixes: tuple[str, ...] = PERSONAL_PREFIXES,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    """Split a state dict into (global backbone, personal head) parameters."""
+    global_params, personal_params = {}, {}
+    for name, tensor in state_dict.items():
+        if name.startswith(prefixes):
+            personal_params[name] = tensor
+        else:
+            global_params[name] = tensor
+    return global_params, personal_params
+
+
+def merge_global_personal(
+    global_params: dict[str, torch.Tensor],
+    personal_params: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    merged = dict(global_params)
+    merged.update(personal_params)
+    return merged
+
+
+def proximal_term(
+    model: torch.nn.Module, global_state: dict[str, torch.Tensor], mu: float
+) -> torch.Tensor:
+    """FedProx penalty μ/2 · ‖w − w_global‖² over non-personal parameters."""
+    if mu <= 0.0:
+        return torch.zeros((), device=next(model.parameters()).device)
+    term = torch.zeros((), device=next(model.parameters()).device)
+    for name, param in model.named_parameters():
+        if name.startswith(PERSONAL_PREFIXES):
+            continue  # personal heads drift freely by design
+        gname = name.replace("module.", "")
+        if gname in global_state:
+            term = term + (param - global_state[gname]).square().sum()
+    return 0.5 * mu * term
+
+
+class LocalTrainer:
+    """Runs local epochs of diffusion training on one client's data shard."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        coord_ddpm,
+        type_ddpm,
+        config: dict[str, Any],
+        device: str | torch.device,
+    ) -> None:
+        self.model = model
+        self.coord_ddpm = coord_ddpm
+        self.type_ddpm = type_ddpm
+        self.cfg = config
+        self.device = torch.device(device)
+
+    def _batch_loss(
+        self,
+        batch_data,
+        optimizer: torch.optim.Optimizer | None,
+        global_state: dict[str, torch.Tensor] | None,
+        mu: float,
+        lambda_type: float,
+        lambda_valence: float,
+        lambda_diversity: float,
+    ) -> tuple[torch.Tensor, float, float]:
+        batch_data = batch_data.to(self.device)
+        if optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
+
+        t = torch.randint(
+            0, self.coord_ddpm.num_steps,
+            (batch_data.num_graphs,), device=self.device,
+        )
+        noisy_pos, actual_noise = self.coord_ddpm.add_noise(
+            batch_data.pos, t, batch_data.batch,
+        )
+        noisy_types = self.type_ddpm.sample_noisy_types(
+            batch_data.z, t, self.cfg["model"]["num_types"], batch_data.batch,
+        )
+        edge_index = build_knn_graph(
+            noisy_pos, batch_data.batch, k=self.cfg["training"]["kNN"],
+        )
+        noise_pred, type_logits, node_h = self.model(
+            noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+        )
+
+        pos_loss = F.mse_loss(noise_pred, actual_noise)
+        type_loss = F.cross_entropy(type_logits, batch_data.z.long())
+        loss = pos_loss + lambda_type * type_loss
+
+        # Step 3.3 multi-objective terms.
+        if lambda_valence > 0.0:
+            loss = loss + lambda_valence * soft_valence_penalty(
+                torch.softmax(type_logits, dim=-1), noisy_pos.detach(),
+                edge_index, batch_data.z,
+                num_types=self.cfg["model"]["num_types"],
+                type_to_z=TYPE_TO_Z,
+            )
+        if lambda_diversity > 0.0:
+            loss = loss + lambda_diversity * diversity_regularizer(
+                node_h, batch_data.batch,
+            )
+
+        # Step 3.1 FedProx client-side proximal term.
+        if global_state is not None and mu > 0.0:
+            loss = loss + proximal_term(self.model, global_state, mu)
+
+        if optimizer is not None:
+            loss.backward()
+            optimizer.step()
+        return loss.detach(), pos_loss.detach().item(), type_loss.detach().item()
+
+    def train(
+        self,
+        loader: torch.utils.data.DataLoader,
+        global_state: dict[str, torch.Tensor] | None = None,
+        local_epochs: int | None = None,
+        mu: float = 0.0,
+        lr: float | None = None,
+    ) -> dict[str, float]:
+        """Run local epochs; returns mean losses over batches."""
+        self.model.train()
+        optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=lr if lr is not None else self.cfg["training"]["lr"],
+            weight_decay=self.cfg["training"].get("weight_decay", 1e-5),
+        )
+        epochs = local_epochs or self.cfg["training"]["epochs"]
+        lambda_type = self.cfg["training"].get("type_loss_weight", 0.5)
+        lambda_valence = self.cfg["training"].get("valence_loss_weight", 0.0)
+        lambda_diversity = self.cfg["training"].get("diversity_loss_weight", 0.0)
+
+        total_loss = total_pos = total_type = 0.0
+        steps = 0
+        for _ in range(epochs):
+            for batch_data in loader:
+                loss, pos_l, type_l = self._batch_loss(
+                    batch_data, optimizer, global_state, mu,
+                    lambda_type, lambda_valence, lambda_diversity,
+                )
+                total_loss += loss.item()
+                total_pos += pos_l
+                total_type += type_l
+                steps += 1
+        n = max(steps, 1)
+        return {
+            "loss": total_loss / n,
+            "pos_loss": total_pos / n,
+            "type_loss": total_type / n,
+            "num_batches": steps,
+        }
+
+    @torch.no_grad()
+    def evaluate(self, loader: torch.utils.data.DataLoader) -> dict[str, float]:
+        self.model.eval()
+        total_loss = total_pos = total_type = 0.0
+        steps = 0
+        lambda_type = self.cfg["training"].get("type_loss_weight", 0.5)
+        for batch_data in loader:
+            _, pos_l, type_l = self._batch_loss(
+                batch_data, None, None, 0.0, lambda_type, 0.0, 0.0,
+            )
+            total_pos += pos_l
+            total_type += type_l
+            total_loss += pos_l + lambda_type * type_l
+            steps += 1
+        n = max(steps, 1)
+        return {
+            "loss": total_loss / n,
+            "pos_loss": total_pos / n,
+            "type_loss": total_type / n,
+        }
+
+    # -- Weight transfer helpers -------------------------------------------
+
+    def get_parameters(self, exclude_personal: bool = True) -> dict[str, torch.Tensor]:
+        """Return weights to send to the server.
+
+        With personalization enabled, personal heads stay on-device.
+        """
+        state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+        if exclude_personal:
+            state, _ = split_global_personal(state)
+        return state
+
+    def set_parameters(self, params: dict[str, torch.Tensor]) -> None:
+        """Load server-provided weights; keep local personal heads intact."""
+        current = self.model.state_dict()
+        current.update({k: v.to(current[k].device) for k, v in params.items()})
+        self.model.load_state_dict(current)
+
+    def init_personal_heads(self) -> dict[str, torch.Tensor]:
+        """Snapshot personal-head params at round 0 so they persist locally."""
+        full = self.model.state_dict()
+        return {k: v.clone() for k, v in split_global_personal(full)[1].items()}
+
+    def fit_to_global(self, global_state: dict[str, torch.Tensor]) -> None:
+        """Replace all non-personal parameters with the aggregated global ones."""
+        merged = merge_global_personal(
+            {k: v.clone() for k, v in global_state.items()},
+            split_global_personal(self.model.state_dict())[1],
+        )
+        self.model.load_state_dict(merged)
+
+
+def init_model_from_state(
+    model_cfg: dict[str, Any],
+    state: dict[str, torch.Tensor] | None,
+    device: str | torch.device,
+) -> EquivariantGenerator:
+    """Build an ``EquivariantGenerator`` from config, optionally loading weights."""
+    model = EquivariantGenerator(
+        num_types=model_cfg["num_types"],
+        node_dim=model_cfg["node_dim"],
+        edge_dim=model_cfg["edge_dim"],
+        num_layers=model_cfg["num_layers"],
+        time_dim=model_cfg["time_dim"],
+    ).to(device)
+    if state is not None:
+        model.load_state_dict(state)
+    return model
+
+
+def weighted_fedavg(
+    client_states: list[tuple[dict[str, torch.Tensor], int]],
+) -> dict[str, torch.Tensor]:
+    """Weighted parameter aggregation (Eq. 8 of the paper).
+
+    Each key is averaged with weight ``n_i / Σ n_j``. Keys missing from a
+    client (e.g. personal heads) are skipped gracefully.
+    """
+    total = sum(n for _, n in client_states)
+    aggregated: dict[str, torch.Tensor] = {}
+    for key in client_states[0][0]:
+        acc = None
+        weight_acc = 0.0
+        for state, n in client_states:
+            if key not in state:
+                continue
+            contribution = state[key].to(torch.float64) * (n / total)
+            acc = contribution if acc is None else acc + contribution
+            weight_acc += n / total
+        if acc is not None and weight_acc > 0:
+            aggregated[key] = (acc / weight_acc).to(torch.float32)
+    return aggregated

@@ -29,6 +29,7 @@ def sample_molecules(
     device: str | torch.device = "cuda",
     ddim_steps: int | None = None,
     eta: float = 0.0,
+    x0_clamp: float = 10.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -40,6 +41,9 @@ def sample_molecules(
         ddim_steps: if given, use DDIM with this many evenly spaced steps;
             otherwise full ancestral DDPM sampling.
         eta: DDIM stochasticity (0 = deterministic).
+        x0_clamp: bound on the predicted clean coordinates per component
+            (Angstrom). Prevents the well-known x0-prediction blow-up when the
+            denoiser is undertrained; EDM-style static clamping.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -59,9 +63,6 @@ def sample_molecules(
     # x_T ~ N(0, I), re-centered per molecule so CoM stays at the origin.
     pos = _center_per_molecule(torch.randn(total_atoms, 3, device=device), batch)
     # z_T ~ uniform categorical prior over atom types.
-    z = torch.randint(
-        0, type_ddpm_alpha_bar_size(type_ddpm), (total_atoms,), device=device
-    )
     z = torch.randint(0, model.num_types, (total_atoms,), device=device)
 
     if ddim_steps is None:
@@ -69,6 +70,9 @@ def sample_molecules(
     else:
         grid = torch.linspace(0, coord_ddpm.num_steps - 1, ddim_steps + 1).long()
         timestep_iter = grid.flip(0).tolist()[:-1]
+
+    def clamp_x0(x0: torch.Tensor) -> torch.Tensor:
+        return x0.clamp(-x0_clamp, x0_clamp)
 
     for step_idx, t_cur in enumerate(timestep_iter):
         t = torch.full((num_graphs,), t_cur, dtype=torch.long, device=device)
@@ -79,20 +83,26 @@ def sample_molecules(
         alpha_bar_t = coord_ddpm.alpha_bars[t_cur]
 
         # --- Coordinate update ---
-        x0_pred = (pos - (1.0 - alpha_bar_t).sqrt() * noise_pred) / alpha_bar_t.sqrt()
+        x0_pred = clamp_x0(
+            (pos - (1.0 - alpha_bar_t).sqrt() * noise_pred) / alpha_bar_t.sqrt()
+        )
         if ddim_steps is None:
-            # Ancestral DDPM step.
+            # Ancestral DDPM step in x0-prediction form (Ho et al., 2020):
+            # mu = c1*x0 + c2*x_t with c1+c2 coefficients from the posterior.
             beta_t = coord_ddpm.betas[t_cur]
-            mean = (
-                pos - beta_t / (1.0 - alpha_bar_t).sqrt() * noise_pred
-            ) / alpha_t.sqrt()
             if t_cur > 0:
-                var = beta_t * (1.0 - coord_ddpm.alpha_bars[t_cur - 1]) / (
-                    1.0 - alpha_bar_t
+                alpha_bar_prev = coord_ddpm.alpha_bars[t_cur - 1]
+                coef_x0 = (
+                    alpha_bar_prev.sqrt() * beta_t / (1.0 - alpha_bar_t)
                 )
+                coef_xt = (
+                    alpha_t.sqrt() * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)
+                )
+                mean = coef_x0 * x0_pred + coef_xt * pos
+                var = beta_t * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)
                 pos = mean + var.sqrt() * torch.randn_like(pos)
             else:
-                pos = mean
+                pos = x0_pred
         else:
             prev_grid = timestep_iter[step_idx + 1] if step_idx + 1 < len(timestep_iter) else -1
             alpha_bar_prev = (
@@ -109,14 +119,9 @@ def sample_molecules(
 
         # --- Atom-type update via categorical posterior q(z_{t-1} | z_t, p0) ---
         probs = type_ddpm.posterior_probs(
-            z, torch.softmax(type_logits, dim=-1), t, model.num_types
+            z, torch.softmax(type_logits, dim=-1), t, model.num_types, batch,
         ).to(device)
         z = torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     pos = _center_per_molecule(pos, batch)
     return pos.cpu(), z.cpu()
-
-
-def type_ddpm_alpha_bar_size(type_ddpm: TypeDDPM) -> int:
-    """Number of diffusion steps in a ``TypeDDPM`` schedule."""
-    return int(type_ddpm.num_steps)

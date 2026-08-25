@@ -90,19 +90,47 @@ class TypeDDPM:
         self.alphas = 1.0 - self.betas
         self.alpha_bars = torch.cumprod(self.alphas, dim=0)
 
-    def forward_probs(
-        self, z: torch.Tensor, t: torch.Tensor, num_classes: int
+    def _atom_batch(
+        self, z: torch.Tensor, t: torch.Tensor, batch: torch.Tensor | None
     ) -> torch.Tensor:
-        """Continuous noised type distributions ``q(z_t | z_0)`` of shape (N, K)."""
-        alpha_bar = self.alpha_bars[t].to(device=z.device).unsqueeze(-1)
+        """Per-atom timestep index, broadcasting per-molecule ``t``."""
+        if batch is None:
+            if t.numel() != z.size(0):
+                batch = torch.zeros(
+                    z.size(0), dtype=torch.long, device=t.device
+                )
+            else:
+                batch = torch.arange(z.size(0), device=t.device)
+        return batch.to(t.device)
+
+    def forward_probs(
+        self,
+        z: torch.Tensor,
+        t: torch.Tensor,
+        num_classes: int,
+        batch: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Continuous noised type distributions ``q(z_t | z_0)`` of shape (N, K).
+
+        ``t`` holds one timestep per molecule; ``batch`` maps atoms to
+        molecules (defaults to all-atoms-in-one-molecule when len(t) != N).
+        """
+        batch = self._atom_batch(z, t, batch)
+        alpha_bar = self.alpha_bars[t.to(self.device)].to(device=z.device)[batch]
         z0 = F.one_hot(z.long(), num_classes).float()
-        return alpha_bar * z0 + (1.0 - alpha_bar) / num_classes
+        return alpha_bar.unsqueeze(-1) * z0 + (
+            1.0 - alpha_bar
+        ).unsqueeze(-1) / num_classes
 
     def sample_noisy_types(
-        self, z: torch.Tensor, t: torch.Tensor, num_classes: int
+        self,
+        z: torch.Tensor,
+        t: torch.Tensor,
+        num_classes: int,
+        batch: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Draw discrete noised type indices from ``q(z_t | z_0)``."""
-        probs = self.forward_probs(z, t, num_classes)
+        probs = self.forward_probs(z, t, num_classes, batch)
         return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     def posterior_probs(
@@ -111,17 +139,20 @@ class TypeDDPM:
         clean_probs: torch.Tensor,
         t: torch.Tensor,
         num_classes: int,
+        batch: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Categorical posterior ``q(z_{t-1} | z_t, z0_hat)`` for every atom.
 
-        ``clean_probs`` is the model's predicted distribution over clean types.
+        ``clean_probs`` is the model's predicted distribution over clean types;
+        ``t``/``batch`` follow the same convention as :meth:`forward_probs`.
         """
-        t = t.to(self.device)
-        alpha_t = self.alpha_bars[t]                      # (G,)
-        alpha_prev = self.alpha_bars[(t - 1).clamp_min(0)]  # (G,)
-        alpha_prev = torch.where(t > 0, alpha_prev, torch.ones_like(alpha_prev))
+        batch = self._atom_batch(z_t, t, batch)
+        t_atom = t.to(self.device)[batch]
+        alpha_t = self.alpha_bars[t_atom]                      # (N,)
+        alpha_prev = self.alpha_bars[(t_atom - 1).clamp_min(0)]
+        alpha_prev = torch.where(t_atom > 0, alpha_prev, torch.ones_like(alpha_prev))
 
-        # M[g, v, j] = q(z_t = j | z_{t-1} = v) for graph g.
+        # M[n, v, j] = q(z_t = j | z_{t-1} = v) for the molecule of atom n.
         eye = torch.eye(num_classes, device=self.device)
         trans = alpha_t.view(-1, 1, 1) * eye.unsqueeze(0) + (
             1.0 - alpha_t

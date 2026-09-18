@@ -1,0 +1,35 @@
+# Centralized CPU smoke config — 500 QM9 molecules, 2 epochs.
+# Paths verified: data.root=data, checkpoint.dir=checkpoints/smoke
+seed: 42
+
+data:
+  root: data
+  max_molecules: 500
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 32
+  edge_dim: 32
+  num_layers: 2
+  time_dim: 16
+
+diffusion:
+  num_steps: 100
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 2
+  batch_size: 16
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  kNN: 4
+  type_loss_weight: 0.5
+  patience: 10
+
+checkpoint:
+  dir: checkpoints/smoke
+  save_every: 1

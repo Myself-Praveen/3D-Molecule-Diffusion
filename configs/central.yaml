@@ -28,7 +28,7 @@ training:
   weight_decay: 1.0e-5
   kNN: 4
   type_loss_weight: 0.5   # lambda in L = L_pos + lambda * L_type
-  patience: 10            # early-stopping patience on validation loss
+  patience: 1000          # effectively disable early stop for full 100-epoch run
 
 checkpoint:
   dir: checkpoints

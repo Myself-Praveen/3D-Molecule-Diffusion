@@ -129,14 +129,34 @@ class FederatedServer:
 
     # ------------------------------------------------------------------ main
 
-    def fit(self) -> list[dict]:
+    def _atomic_torch_save(self, state: dict, path: Path) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        torch.save(state, tmp)
+        tmp.replace(path)
+
+    def fit(self, start_round: int = 1, run_rounds: int | None = None) -> list[dict]:
         rounds = int(self.cfg["fed"]["rounds"])
         eval_every = int(self.cfg["fed"].get("eval_every", 5))
         sample_every = int(self.cfg["fed"].get("sample_eval_every", 10))
         lr_schedule = self.cfg["fed"].get("lr_per_round")
 
+        if run_rounds is not None and run_rounds > 0:
+            end_round = min(rounds, start_round + run_rounds - 1)
+        else:
+            end_round = rounds
+        if start_round > rounds:
+            print(f"Federated training already complete "
+                  f"(start_round={start_round} > total={rounds})")
+            return self.history
+        print(f"Running rounds {start_round}..{end_round} (total {rounds})")
+
+        # Restore best_val from loaded history (resume) so best_global.pt logic continues
         best_val = float("inf")
-        for round_idx in range(1, rounds + 1):
+        for h in self.history:
+            v = (h.get("val") or {}).get("loss")
+            if v is not None and v < best_val:
+                best_val = v
+        for round_idx in range(start_round, end_round + 1):
             t0 = time.time()
             lr = lr_schedule[round_idx - 1] if lr_schedule else None
             log = self.run_round(round_idx, lr=lr)
@@ -147,10 +167,11 @@ class FederatedServer:
                 log["val"] = val_metrics
                 if val_metrics["loss"] < best_val:
                     best_val = val_metrics["loss"]
-                    torch.save(
+                    self._atomic_torch_save(
                         {
                             "round": round_idx,
                             "global_state": self.global_state,
+                            "best_val": best_val,
                             "config": self.cfg,
                         },
                         self.output_dir / "best_global.pt",
@@ -171,15 +192,36 @@ class FederatedServer:
             )
             self.history.append(log)
             self._save_history()
+            # last_global.pt every round = resume point (max 1 round lost on kill)
+            personal_states = None
+            if self.personalized:
+                personal_states = [
+                    {k: v.cpu() for k, v in split_global_personal(
+                        t.model.state_dict())[1].items()}
+                    for t in self.trainers
+                ]
+            self._atomic_torch_save(
+                {
+                    "round": round_idx,
+                    "global_state": {k: v.cpu() for k, v in self.global_state.items()},
+                    "personal_states": personal_states,
+                    "best_val": best_val,
+                    "config": self.cfg,
+                },
+                self.output_dir / "last_global.pt",
+            )
 
-        torch.save(
+        self._atomic_torch_save(
             {
-                "round": rounds,
+                "round": end_round,
                 "global_state": self.global_state,
                 "config": self.cfg,
             },
             self.output_dir / "final_global.pt",
         )
+        if end_round < rounds:
+            print(f"\nChunk done at round {end_round}/{rounds}. "
+                  f"Resume with: python fed_train.py --config <cfg> --resume --run_rounds N")
         return self.history
 
     # ------------------------------------------------------------- sampling

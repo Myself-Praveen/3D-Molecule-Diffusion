@@ -14,6 +14,7 @@ The config controls:
 from __future__ import annotations
 
 import argparse
+import json
 import random
 from pathlib import Path
 
@@ -45,7 +46,11 @@ def build_client_loaders(dataset, partitions, batch_size: int) -> list:
     return loaders
 
 
-def run_federated(config_path: str = "configs/fed_iid.yaml") -> None:
+def run_federated(
+    config_path: str = "configs/fed_iid.yaml",
+    resume: bool = False,
+    run_rounds: int | None = None,
+) -> None:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
 
@@ -119,13 +124,53 @@ def run_federated(config_path: str = "configs/fed_iid.yaml") -> None:
         output_dir=cfg.get("output_dir", "outputs/fed"),
     )
 
+    # ---- Resume handling (explicit --resume only) ---------------------------
+    output_dir = Path(cfg.get("output_dir", "outputs/fed"))
+    last_path = output_dir / "last_global.pt"
+    hist_path = output_dir / "history.json"
+    start_round = 1
+    if resume:
+        if last_path.exists() and hist_path.exists():
+            print(f"Resuming from {last_path}")
+            rstate = torch.load(last_path, map_location="cpu", weights_only=False)
+            # Config-mismatch guard: arch + partition must match
+            for k in ("num_types", "node_dim", "edge_dim", "num_layers", "time_dim"):
+                if rstate.get("config", {}).get("model", {}).get(k) != cfg["model"].get(k):
+                    raise ValueError(
+                        f"Resume config mismatch for model.{k}: "
+                        f"checkpoint={rstate.get('config', {}).get('model', {}).get(k)} "
+                        f"vs current={cfg['model'].get(k)}. Refusing to resume."
+                    )
+            if rstate.get("config", {}).get("fed", {}).get("num_clients") != cfg["fed"].get("num_clients"):
+                raise ValueError("Resume config mismatch for fed.num_clients. Refusing to resume.")
+            for trainer in trainers:
+                trainer.set_parameters(
+                    {k: v.to(trainer.device) for k, v in rstate["global_state"].items()}
+                )
+            # Restore personal heads if present
+            if rstate.get("personal_states") is not None:
+                for trainer, pstate in zip(trainers, rstate["personal_states"]):
+                    if pstate:
+                        cur = trainer.model.state_dict()
+                        cur.update({k: v.to(cur[k].device) for k, v in pstate.items()})
+                        trainer.model.load_state_dict(cur)
+            with open(hist_path) as f:
+                server.history = json.load(f)
+            start_round = int(rstate.get("round", len(server.history))) + 1
+            print(f"  → round {start_round}, history_len={len(server.history)}")
+        else:
+            print(f"  ! --resume given but {last_path} or {hist_path} missing; starting fresh")
+    elif last_path.exists() or hist_path.exists():
+        print(f"  ! {output_dir} has prior state but --resume not given; starting fresh "
+              f"(history.json will be overwritten)")
+
     print(
         f"K={cfg['fed']['num_clients']} mode={cfg['fed']['mode']} "
         f"E={cfg['fed']['local_epochs']} rounds={cfg['fed']['rounds']} "
         f"mu={cfg['fed'].get('proximal_mu', 0.0)} "
         f"personal_heads={cfg['fed'].get('personal_heads', False)}"
     )
-    server.fit()
+    server.fit(start_round=start_round, run_rounds=run_rounds)
 
     # ---- Final per-client personalized evaluation --------------------------
     if server.personalized:
@@ -139,5 +184,13 @@ def run_federated(config_path: str = "configs/fed_iid.yaml") -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Federated diffusion training")
     parser.add_argument("--config", type=str, default="configs/fed_iid.yaml")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from output_dir/last_global.pt + history.json (explicit flag required)",
+    )
+    parser.add_argument(
+        "--run_rounds", type=int, default=None,
+        help="Max rounds for this invocation (1-hour chunking, e.g. 5). None = to end.",
+    )
     args = parser.parse_args()
-    run_federated(args.config)
+    run_federated(args.config, resume=args.resume, run_rounds=args.run_rounds)

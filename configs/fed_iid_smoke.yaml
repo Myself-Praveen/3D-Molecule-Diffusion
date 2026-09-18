@@ -1,0 +1,46 @@
+# Federated IID CPU smoke config — 500 molecules, 2 rounds.
+seed: 42
+
+data:
+  root: data
+  max_molecules: 500
+  val_frac: 0.1
+
+fed:
+  num_clients: 2
+  mode: iid
+  rounds: 2
+  local_epochs: 1
+  proximal_mu: 0.0
+  personal_heads: false
+  eval_every: 1
+  sample_eval_every: 2
+
+model:
+  num_types: 10
+  node_dim: 32
+  edge_dim: 32
+  num_layers: 2
+  time_dim: 16
+
+diffusion:
+  num_steps: 100
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  batch_size: 16
+  kNN: 4
+  type_loss_weight: 0.5
+  valence_loss_weight: 0.0
+  diversity_loss_weight: 0.0
+
+generation:
+  num_samples: 8
+  max_atoms: 12
+  ddim_steps: 10
+
+output_dir: outputs/fed_iid_smoke
+partition_cache: data/partitions

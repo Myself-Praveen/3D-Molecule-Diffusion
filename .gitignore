@@ -8,6 +8,8 @@ data/*
 !data/.gitkeep
 checkpoints/*
 !checkpoints/.gitkeep
+models/*
+!models/.gitkeep
 !outputs/.gitkeep
 
 # Local environment and editor files

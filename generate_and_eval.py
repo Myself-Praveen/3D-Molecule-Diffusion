@@ -27,6 +27,35 @@ from src.utils.evaluation import coords_and_types_to_mol, evaluate, print_metric
 QM9_ATOMIC_NUMBERS = [1, 6, 7, 8, 9, 15, 16, 17, 35, 53]
 
 
+def _load_model_weights(ckpt: dict, model) -> dict:
+    """Extract loadable weights from central or federated checkpoints.
+
+    Central ``train.py`` checkpoints store ``model_state_dict`` (full model).
+    Federated ``fed_train.py`` checkpoints store ``global_state``: the full
+    model when ``personal_heads=false``, or the backbone only (type/bond
+    heads stay at init) when personalization is enabled.
+    """
+    if "model_state_dict" in ckpt:
+        print("Checkpoint format: central (model_state_dict)")
+        return ckpt["model_state_dict"]
+    if "global_state" in ckpt:
+        state = ckpt["global_state"]
+        model_keys = set(model.state_dict())
+        missing = sorted(model_keys - set(state))
+        if missing:
+            print(f"Checkpoint format: federated backbone-only; "
+                  f"{len(missing)} head params at init: {missing}")
+        else:
+            print("Checkpoint format: federated full (global_state)")
+        merged = dict(model.state_dict())
+        merged.update(state)
+        return merged
+    raise KeyError(
+        f"Unknown checkpoint format: keys {sorted(ckpt)} "
+        f"(expected 'model_state_dict' or 'global_state')"
+    )
+
+
 def _build_atom_count_histogram(dataset) -> list[int]:
     """Compute per-molecule atom counts across the full QM9 dataset."""
     counts = []
@@ -57,6 +86,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default=None,
                         help="Force device (cuda / cpu)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="If given, save metrics.json, smiles.txt and "
+                             "molecules.sdf there (created if needed)")
     args = parser.parse_args()
 
     # Config
@@ -83,7 +115,7 @@ def main() -> None:
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
     ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(_load_model_weights(ckpt, model))
 
     coord_ddpm = CenteredDDPM(
         num_steps=diff_cfg["num_steps"],
@@ -159,9 +191,73 @@ def main() -> None:
 
     # Print as table for easy copy-paste
     print("\nLaTeX row:")
-    vals = [f"{metrics[k]:.4f}" for k in ["Validity", "Uniqueness", "Novelty",
-                                            "IntDiv_p", "QED", "LogP", "SNN"]]
-    print("  & ".join(vals) + " \\\\")
+    metric_keys = ["Validity", "Uniqueness", "Novelty",
+                   "IntDiv_p", "QED", "LogP", "SNN"]
+    vals = [f"{metrics[k]:.4f}" for k in metric_keys]
+    latex_row = "  & ".join(vals) + " \\\\"
+    print(latex_row)
+
+    if args.output_dir:
+        _save_eval_outputs(
+            args.output_dir, all_mols, metrics, latex_row,
+            checkpoint=args.checkpoint, num_samples=args.num_samples,
+            ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
+        )
+
+
+def _save_eval_outputs(
+    output_dir: str,
+    mols: list,
+    metrics: dict,
+    latex_row: str,
+    **run_cfg,
+) -> None:
+    """Persist eval results: metrics.json, smiles.txt, molecules.sdf (3D)."""
+    import json
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    valid_smiles: list[str] = []
+    for m in mols:
+        if m is None:
+            continue
+        try:
+            valid_smiles.append(Chem.MolToSmiles(m))
+        except Exception:
+            continue
+
+    with open(out / "metrics.json", "w") as f:
+        json.dump(
+            {
+                "metrics": metrics,
+                "latex_row": latex_row,
+                "num_valid": len(valid_smiles),
+                "num_total": len(mols),
+                "run": run_cfg,
+            },
+            f,
+            indent=2,
+        )
+    with open(out / "smiles.txt", "w") as f:
+        f.write("\n".join(valid_smiles) + ("\n" if valid_smiles else ""))
+
+    sdf_path = out / "molecules.sdf"
+    writer = Chem.SDWriter(str(sdf_path))
+    writer.SetKekulize(True)
+    saved = 0
+    for mol, smi in zip(
+        [m for m in mols if m is not None], valid_smiles,
+    ):
+        try:
+            mol.SetProp("_Name", smi)
+            writer.write(mol)
+            saved += 1
+        except Exception:
+            continue
+    writer.close()
+    print(f"\nSaved {saved} molecules -> {sdf_path}")
+    print(f"Saved metrics -> {out / 'metrics.json'}, smiles -> {out / 'smiles.txt'}")
 
 
 def _data_to_rdkit_mol(data) -> Chem.Mol | None:

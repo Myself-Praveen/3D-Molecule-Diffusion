@@ -1,0 +1,21 @@
+{
+  "metrics": {
+    "Validity": 86.3,
+    "Uniqueness": 47.740440324449594,
+    "Novelty": 47.740440324449594,
+    "IntDiv_p": 0.3236862308242503,
+    "QED": 0.24246025638690966,
+    "LogP": 11.267004495944379,
+    "SNN": 0.0667691579723411
+  },
+  "latex_row": "86.3000  & 47.7404  & 47.7404  & 0.3237  & 0.2425  & 11.2670  & 0.0668 \\\\",
+  "num_valid": 863,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "outputs/fed_iid/best_global.pt",
+    "num_samples": 1000,
+    "ddim_steps": 50,
+    "eta": 0.0,
+    "seed": 42
+  }
+}

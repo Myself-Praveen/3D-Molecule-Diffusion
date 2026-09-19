@@ -22,8 +22,10 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.dataset import load_qm9
+from src.fed.trainer import TYPE_TO_Z
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
+from src.objectives import diversity_regularizer, soft_valence_penalty
 from src.utils.graph import build_knn_graph
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -138,6 +140,8 @@ def train_diffusion(
     last_path = ckpt_dir / "last.pt"
 
     lambda_type = train_cfg.get("type_loss_weight", 0.5)
+    lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
+    lambda_diversity = float(train_cfg.get("diversity_loss_weight", 0.0))
 
     # ---- Resume handling (explicit --resume only) ---------------------------
     start_epoch = 1
@@ -215,7 +219,7 @@ def train_diffusion(
 
             edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
 
-            noise_pred, type_logits, _ = model(
+            noise_pred, type_logits, node_h = model(
                 noisy_types, noisy_pos, edge_index, t, batch_data.batch,
             )
 
@@ -223,6 +227,22 @@ def train_diffusion(
             pos_loss = F.mse_loss(noise_pred, actual_noise)
             type_loss = F.cross_entropy(type_logits, batch_data.z.long())
             loss = pos_loss + lambda_type * type_loss
+
+            # λ₂ soft valence penalty (validity surrogate). NOTE: noisy_pos is
+            # intentionally ATTACHED (unlike the fed-trainer variant) so the
+            # gradient also spreads over-packed atoms apart — the failure mode
+            # seen in coordfix_v1 samples (26 bonds/mol vs ~19 true).
+            if lambda_valence > 0.0:
+                loss = loss + lambda_valence * soft_valence_penalty(
+                    torch.softmax(type_logits, dim=-1), noisy_pos,
+                    edge_index, batch_data.z,
+                    num_types=model_cfg["num_types"],
+                    type_to_z=TYPE_TO_Z,
+                )
+            if lambda_diversity > 0.0:
+                loss = loss + lambda_diversity * diversity_regularizer(
+                    node_h, batch_data.batch,
+                )
 
             loss.backward()
             optimizer.step()

@@ -20,7 +20,15 @@ from torch import nn
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-from src.fed.trainer import Z_TO_INDEX
+# Frozen atom vocabulary of the trained oracle (dense 0-9 indices).
+# NOTE: this intentionally differs from the diffusion model's raw-Z index
+# convention — the oracle was trained end-to-end with this mapping and is
+# self-consistent (train and inference share it). Do not "fix" to identity
+# without retraining models/bbb_oracle.pt.
+_ORACLE_Z_TO_INDEX = {1: 0, 6: 1, 7: 2, 8: 3, 9: 4,
+                      15: 5, 16: 6, 17: 7, 35: 8, 53: 9}
+Z_TO_INDEX = dict(_ORACLE_Z_TO_INDEX)  # kept for backward-compatible imports
+
 
 
 class BBBClassifier(nn.Module):

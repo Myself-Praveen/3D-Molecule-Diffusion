@@ -96,6 +96,10 @@ def sample_molecules(
             type_logits = logits_u + guidance_scale * (logits_c - logits_u)
         else:
             noise_pred, type_logits, _ = model(z, pos, edge_index, t, batch, cond=cond)
+
+        # Numerical guard: a confident model emits large logits whose softmax
+        # saturates; clamping keeps the categorical posterior finite.
+        type_logits = type_logits.clamp(-15.0, 15.0)
         alpha_t = coord_ddpm.alphas[t_cur]
         alpha_bar_t = coord_ddpm.alpha_bars[t_cur]
 
@@ -138,6 +142,15 @@ def sample_molecules(
         probs = type_ddpm.posterior_probs(
             z, torch.softmax(type_logits, dim=-1), t, model.num_types, batch,
         ).to(device)
+        # Bulletproof multinomial input: any non-finite/negative entry (e.g.
+        # from extreme logits on rare noisy inputs) falls back to uniform for
+        # that atom instead of crashing the whole generation run.
+        bad_rows = (~torch.isfinite(probs)).any(dim=-1) | (probs.sum(dim=-1) <= 0)
+        if bad_rows.any():
+            uniform = torch.full_like(probs, 1.0 / probs.size(-1))
+            probs = torch.where(bad_rows.view(-1, 1), uniform, probs)
+        probs = probs.clamp_min(0.0)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
         z = torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     pos = _center_per_molecule(pos, batch)

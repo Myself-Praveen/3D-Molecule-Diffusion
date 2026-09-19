@@ -23,8 +23,11 @@ from src.models.egnn import EquivariantGenerator
 from src.sampling import sample_molecules
 from src.utils.evaluation import coords_and_types_to_mol, evaluate, print_metrics
 
-# QM9 atomic numbers present in the dataset.
-QM9_ATOMIC_NUMBERS = [1, 6, 7, 8, 9, 15, 16, 17, 35, 53]
+# NOTE (coord-fix era): the diffusion model indexes atom types by RAW ATOMIC
+# NUMBER (PyG QM9 ``z`` is {1:H, 6:C, 7:N, 8:O, 9:F}; classes 0,2-5 are dead).
+# The sampled index IS the atomic number — do NOT remap through a table
+# (the old QM9_ATOMIC_NUMBERS lookup shifted every element and fabricated
+# the pre-fix validity numbers).
 
 
 def _load_model_weights(ckpt: dict, model) -> dict:
@@ -173,13 +176,8 @@ def main() -> None:
         for count in atom_counts:
             mol_pos = pos[offset:offset + count].numpy()
             mol_z = z[offset:offset + count].numpy()
-            # Map type indices to atomic numbers
-            # In QM9, z values are raw atomic numbers; model indices correspond
-            # to these.  We need to convert back to atomic numbers.
-            atomic_numbers = np.array(
-                [QM9_ATOMIC_NUMBERS[int(t)] if int(t) < len(QM9_ATOMIC_NUMBERS) else 1
-                 for t in mol_z]
-            )
+            # Model type indices ARE raw atomic numbers (see note above).
+            atomic_numbers = np.array([int(t) for t in mol_z])
             mol = coords_and_types_to_mol(mol_pos, atomic_numbers)
             all_mols.append(mol)
             offset += count

@@ -31,7 +31,7 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from tqdm import tqdm
 
 from src.dataset_bbb import get_dataset_info, load_b3db, load_bbbp
-from src.fed.trainer import Z_TO_INDEX
+from src.models.bbb_classifier import Z_TO_INDEX
 from src.models.bbb_classifier import BBBClassifier, bbb_topology_edges
 
 _LOADERS = {"bbbp": (load_bbbp, "data/bbbp"), "b3db": (load_b3db, "data/b3db")}

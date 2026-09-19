@@ -10,6 +10,7 @@ checkpoints/*
 !checkpoints/.gitkeep
 models/*
 !models/.gitkeep
+logs/*
 !outputs/.gitkeep
 
 # Local environment and editor files

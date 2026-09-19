@@ -14,10 +14,13 @@ Flower clients (Step 2.2) use identical logic. Supports:
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Any
 
 import torch
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
@@ -27,17 +30,18 @@ from src.utils.graph import build_knn_graph
 # FedPer-style personal parameters: kept local, never aggregated.
 PERSONAL_PREFIXES = ("type_head", "bond_head")
 
-# Default QM9 type-index -> atomic-number map used by the valence penalty.
-TYPE_TO_Z = {0: 0, 1: 1, 2: 6, 3: 7, 4: 8, 5: 9, 6: 15, 7: 16, 8: 17, 9: 35}
+# Type-index -> atomic-number map used by the valence penalty.
+# NOTE (coord-fix era): model indices ARE raw atomic numbers (PyG QM9 z is
+# {1:H, 6:C, 7:N, 8:O, 9:F}), so this is the identity over supported Z.
+TYPE_TO_Z = {i: i for i in range(10)}
 
-# Phase 2: raw atomic number -> QM9 type index. QM9 batches already store
-# indices; BBB batches store raw Z (incl. explicit H). Trace elements absent
-# from the 10-type vocabulary (B, Na, Si, ...) fall back to carbon.
-Z_TO_INDEX = {1: 0, 6: 1, 7: 2, 8: 3, 9: 4, 15: 5, 16: 6, 17: 7, 35: 8, 53: 9}
-_CARBON_INDEX = 1
-_Z_LUT = torch.full((64,), _CARBON_INDEX, dtype=torch.long)
-for _z, _i in Z_TO_INDEX.items():
-    _Z_LUT[_z] = _i
+# Phase 2: model indices are raw atomic numbers, so supported Z (QM9 + BBB
+# common atoms H,C,N,O,F) map to themselves. Heavier BBB atoms (S,P,halogens
+# with Z >= num_types) would crash one_hot and fall back to carbon with a
+# warning; full-fidelity BBB configs should use a larger num_types (Phase 5).
+_SUPPORTED_Z = (1, 6, 7, 8, 9)
+_CARBON_Z = 6
+_exotic_warned = False
 
 
 def split_global_personal(
@@ -125,17 +129,28 @@ class LocalTrainer:
         return {"label": labels.long(), "properties": props.float()}
 
     def _type_indices(self, batch_data) -> torch.Tensor:
-        """Atom-type indices for the model.
+        """Atom-type indices for the model (identity: indices ARE atomic numbers).
 
-        QM9 batches already store 0-9 indices (returned as-is). BBB batches
-        store raw atomic numbers, mapped through ``Z_TO_INDEX`` whenever
-        conditioning is enabled (independent of per-batch label dropout).
+        Both QM9 and BBB batches store raw Z ({1:H, 6:C, 7:N, 8:O, 9:F});
+        values pass through unchanged. Heavier BBB atoms (S/P/halogens,
+        Z >= num_types) cannot be indexed and fall back to carbon with a
+        one-time warning — full-fidelity BBB configs should raise num_types
+        (Phase 5) instead.
         """
+        global _exotic_warned
         z = batch_data.z.long()
-        if not self.cfg.get("conditioning", {}).get("enabled", False):
-            return z
-        lut = _Z_LUT.to(z.device)
-        return lut[z.clamp(0, len(lut) - 1)]
+        num_types = int(self.cfg["model"]["num_types"])
+        exotic = z >= num_types
+        if bool(exotic.any()):
+            if not _exotic_warned:
+                logger.warning(
+                    "Mapping %d exotic atoms (Z>=%d) to carbon; "
+                    "consider num_types>=54 for full fidelity",
+                    int(exotic.sum()), num_types,
+                )
+                _exotic_warned = True
+            z = torch.where(exotic, torch.full_like(z, _CARBON_Z), z)
+        return z
 
     def _batch_loss(
         self,
@@ -164,7 +179,7 @@ class LocalTrainer:
             )
             if dropout_prob > 0.0 and torch.rand(1).item() < dropout_prob:
                 cond = None
-        # Atom-type indices: raw Z for BBB (conditioned), stored indices for QM9.
+        # Atom-type indices are raw atomic numbers; exotic Z falls back to C.
         z_idx = self._type_indices(batch_data)
         noisy_pos, actual_noise = self.coord_ddpm.add_noise(
             batch_data.pos, t, batch_data.batch,

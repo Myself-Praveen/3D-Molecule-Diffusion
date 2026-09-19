@@ -152,17 +152,22 @@ class TypeDDPM:
         alpha_prev = self.alpha_bars[(t_atom - 1).clamp_min(0)]
         alpha_prev = torch.where(t_atom > 0, alpha_prev, torch.ones_like(alpha_prev))
 
+        # Sanitize model output: extreme logits from a confident model can
+        # otherwise yield inf/NaN rows that crash multinomial sampling.
+        clean = clean_probs.to(self.device).float().view(-1, num_classes)
+        clean = clean.clamp(0.0, 1.0)
+        clean = clean / clean.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
         # M[n, v, j] = q(z_t = j | z_{t-1} = v) for the molecule of atom n.
         eye = torch.eye(num_classes, device=self.device)
         trans = alpha_t.view(-1, 1, 1) * eye.unsqueeze(0) + (
             1.0 - alpha_t
         ).view(-1, 1, 1) / num_classes
-        prev = alpha_prev.view(-1, 1) * clean_probs.to(self.device).view(
-            -1, num_classes
-        ) + (1.0 - alpha_prev).view(-1, 1) / num_classes
+        prev = alpha_prev.view(-1, 1) * clean + (1.0 - alpha_prev).view(-1, 1) / num_classes
 
         # Gather transition row of the currently observed z_t per atom.
         batch_idx = torch.arange(z_t.size(0), device=self.device)
-        trans_obs = trans[batch_idx, :, z_t.to(self.device)]      # (N, K)
+        trans_obs = trans[batch_idx, :, z_t.to(self.device).clamp(0, num_classes - 1)]
         post = trans_obs * prev                                   # (N, K)
+        post = post.clamp_min(0.0)
         return post / post.sum(dim=-1, keepdim=True).clamp_min(1e-12)

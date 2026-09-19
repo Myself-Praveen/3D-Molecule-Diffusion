@@ -8,3 +8,6 @@ pandas
 scikit-learn
 flwr
 pyyaml
+deepchem
+ogb
+seaborn

@@ -30,6 +30,15 @@ PERSONAL_PREFIXES = ("type_head", "bond_head")
 # Default QM9 type-index -> atomic-number map used by the valence penalty.
 TYPE_TO_Z = {0: 0, 1: 1, 2: 6, 3: 7, 4: 8, 5: 9, 6: 15, 7: 16, 8: 17, 9: 35}
 
+# Phase 2: raw atomic number -> QM9 type index. QM9 batches already store
+# indices; BBB batches store raw Z (incl. explicit H). Trace elements absent
+# from the 10-type vocabulary (B, Na, Si, ...) fall back to carbon.
+Z_TO_INDEX = {1: 0, 6: 1, 7: 2, 8: 3, 9: 4, 15: 5, 16: 6, 17: 7, 35: 8, 53: 9}
+_CARBON_INDEX = 1
+_Z_LUT = torch.full((64,), _CARBON_INDEX, dtype=torch.long)
+for _z, _i in Z_TO_INDEX.items():
+    _Z_LUT[_z] = _i
+
 
 def split_global_personal(
     state_dict: dict[str, torch.Tensor],
@@ -87,6 +96,47 @@ class LocalTrainer:
         self.cfg = config
         self.device = torch.device(device)
 
+    def _extract_cond(self, batch_data) -> dict[str, torch.Tensor] | None:
+        """Build the Phase 2 conditioning dict from a BBB batch.
+
+        Returns ``None`` when conditioning is disabled (QM9 unconditional
+        path). Missing attributes degrade gracefully to zeros so unconditional
+        configs never crash.
+        """
+        if not self.cfg.get("conditioning", {}).get("enabled", False):
+            return None
+        n_graphs = int(batch_data.num_graphs)
+        device = self.device
+
+        def _graph_attr(name: str) -> torch.Tensor:
+            attr = getattr(batch_data, name, None)
+            if attr is None:
+                return torch.zeros(n_graphs, 1, device=device)
+            return attr.to(device).reshape(n_graphs, -1)
+
+        labels = _graph_attr("y").reshape(-1)[:n_graphs]
+        if labels.numel() < n_graphs:
+            labels = torch.zeros(n_graphs, device=device)
+        props = torch.cat(
+            [_graph_attr(k) for k in ("qed", "logp", "tpsa", "mw")], dim=-1,
+        )
+        if props.shape != (n_graphs, 4):
+            props = torch.zeros(n_graphs, 4, device=device)
+        return {"label": labels.long(), "properties": props.float()}
+
+    def _type_indices(self, batch_data) -> torch.Tensor:
+        """Atom-type indices for the model.
+
+        QM9 batches already store 0-9 indices (returned as-is). BBB batches
+        store raw atomic numbers, mapped through ``Z_TO_INDEX`` whenever
+        conditioning is enabled (independent of per-batch label dropout).
+        """
+        z = batch_data.z.long()
+        if not self.cfg.get("conditioning", {}).get("enabled", False):
+            return z
+        lut = _Z_LUT.to(z.device)
+        return lut[z.clamp(0, len(lut) - 1)]
+
     def _batch_loss(
         self,
         batch_data,
@@ -105,28 +155,39 @@ class LocalTrainer:
             0, self.coord_ddpm.num_steps,
             (batch_data.num_graphs,), device=self.device,
         )
+        # Phase 2: property conditioning with label dropout for
+        # classifier-free guidance (10% unconditional by default).
+        cond = self._extract_cond(batch_data)
+        if cond is not None and self.model.training:
+            dropout_prob = float(
+                self.cfg.get("conditioning", {}).get("label_dropout", 0.1)
+            )
+            if dropout_prob > 0.0 and torch.rand(1).item() < dropout_prob:
+                cond = None
+        # Atom-type indices: raw Z for BBB (conditioned), stored indices for QM9.
+        z_idx = self._type_indices(batch_data)
         noisy_pos, actual_noise = self.coord_ddpm.add_noise(
             batch_data.pos, t, batch_data.batch,
         )
         noisy_types = self.type_ddpm.sample_noisy_types(
-            batch_data.z, t, self.cfg["model"]["num_types"], batch_data.batch,
+            z_idx, t, self.cfg["model"]["num_types"], batch_data.batch,
         )
         edge_index = build_knn_graph(
             noisy_pos, batch_data.batch, k=self.cfg["training"]["kNN"],
         )
         noise_pred, type_logits, node_h = self.model(
-            noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+            noisy_types, noisy_pos, edge_index, t, batch_data.batch, cond=cond,
         )
 
         pos_loss = F.mse_loss(noise_pred, actual_noise)
-        type_loss = F.cross_entropy(type_logits, batch_data.z.long())
+        type_loss = F.cross_entropy(type_logits, z_idx)
         loss = pos_loss + lambda_type * type_loss
 
         # Step 3.3 multi-objective terms.
         if lambda_valence > 0.0:
             loss = loss + lambda_valence * soft_valence_penalty(
                 torch.softmax(type_logits, dim=-1), noisy_pos.detach(),
-                edge_index, batch_data.z,
+                edge_index, z_idx,
                 num_types=self.cfg["model"]["num_types"],
                 type_to_z=TYPE_TO_Z,
             )
@@ -249,6 +310,8 @@ def init_model_from_state(
         edge_dim=model_cfg["edge_dim"],
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
+        cond_dim=int(model_cfg.get("cond_dim", 0)),
+        num_cond_classes=int(model_cfg.get("num_cond_classes", 2)),
     ).to(device)
     if state is not None:
         model.load_state_dict(state)

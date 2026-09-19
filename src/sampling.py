@@ -30,6 +30,8 @@ def sample_molecules(
     ddim_steps: int | None = None,
     eta: float = 0.0,
     x0_clamp: float = 10.0,
+    cond: dict[str, torch.Tensor] | None = None,
+    guidance_scale: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -44,6 +46,13 @@ def sample_molecules(
         x0_clamp: bound on the predicted clean coordinates per component
             (Angstrom). Prevents the well-known x0-prediction blow-up when the
             denoiser is undertrained; EDM-style static clamping.
+        cond: optional Phase 2 property conditioning dict
+            ``{"label": (B,), "properties": (B, 4)}`` targeting e.g. BBB+.
+            ``None`` samples unconditionally (backward compatible).
+        guidance_scale: classifier-free guidance strength ``w`` (Ho &
+            Salimans, 2022). ``0.0`` disables guidance (standard conditional
+            pass). Requires a model trained with label dropout (see
+            ``LocalTrainer``) and a conditional model (``cond_dim > 0``).
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -78,7 +87,15 @@ def sample_molecules(
         t = torch.full((num_graphs,), t_cur, dtype=torch.long, device=device)
         edge_index = build_knn_graph(pos, batch, k=4)
 
-        noise_pred, type_logits, _ = model(z, pos, edge_index, t, batch)
+        if guidance_scale > 0.0 and cond is not None:
+            # Classifier-free guidance (Ho & Salimans, 2022):
+            # eps_guided = eps_uncond + w * (eps_cond - eps_uncond)
+            noise_c, logits_c, _ = model(z, pos, edge_index, t, batch, cond=cond)
+            noise_u, logits_u, _ = model(z, pos, edge_index, t, batch, cond=None)
+            noise_pred = noise_u + guidance_scale * (noise_c - noise_u)
+            type_logits = logits_u + guidance_scale * (logits_c - logits_u)
+        else:
+            noise_pred, type_logits, _ = model(z, pos, edge_index, t, batch, cond=cond)
         alpha_t = coord_ddpm.alphas[t_cur]
         alpha_bar_t = coord_ddpm.alpha_bars[t_cur]
 

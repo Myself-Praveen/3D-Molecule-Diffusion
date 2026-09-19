@@ -34,6 +34,22 @@ def distance_adjacency_probs(pos: torch.Tensor, pair_index: torch.Tensor) -> tor
     return torch.sigmoid((_BOND_CUTOFF - dist) / _SOFTNESS)
 
 
+def full_pair_index(batch: torch.Tensor) -> torch.Tensor:
+    """All unordered atom pairs (i<j) within each molecule as (2, P) index."""
+    pairs = []
+    for g in torch.unique(batch):
+        idx = torch.where(batch == g)[0]
+        n = idx.numel()
+        if n < 2:
+            continue
+        r, c = torch.meshgrid(idx, idx, indexing="ij")
+        mask = r < c
+        pairs.append(torch.stack([r[mask], c[mask]], dim=0))
+    if not pairs:
+        return torch.zeros((2, 0), dtype=torch.long, device=batch.device)
+    return torch.cat(pairs, dim=1)
+
+
 def soft_valence_penalty(
     type_probs: torch.Tensor,
     pos: torch.Tensor,
@@ -41,6 +57,7 @@ def soft_valence_penalty(
     atomic_numbers: torch.Tensor,
     num_types: int,
     type_to_z: dict[int, int] | None = None,
+    batch: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Expected valence-violation penalty over predicted bonds.
 
@@ -50,6 +67,12 @@ def soft_valence_penalty(
     organic molecules). The penalty is ReLU(expected_use − max_valence)²,
     averaged over atoms. Fully differentiable w.r.t. type probabilities and
     coordinates.
+
+    NOTE: when ``batch`` is given, adjacency is counted over ALL intra-
+    molecular pairs (not just the kNN ``pair_index``). kNN-capped counting
+    cannot discriminate dense clumps (every atom trivially has k neighbors)
+    from real molecules — all-pairs counting separates them (~2-3 vs ~10
+    neighbors within 2.0 A).
     """
     if type_to_z is None:
         # Default QM9 type-index -> atomic-number map (index 0 is padding '*').
@@ -62,6 +85,8 @@ def soft_valence_penalty(
     # Expected maximum valence under the predicted categorical distribution.
     atom_valence = (type_probs * max_valence.unsqueeze(0)).sum(dim=-1)
 
+    if batch is not None:
+        pair_index = full_pair_index(batch.to(pos.device))
     adj_p = distance_adjacency_probs(pos, pair_index)
 
     # Expected number of bonds per atom (each pair counted from both ends).

@@ -202,9 +202,10 @@ class LocalTrainer:
         if lambda_valence > 0.0:
             loss = loss + lambda_valence * soft_valence_penalty(
                 torch.softmax(type_logits, dim=-1), noisy_pos.detach(),
-                edge_index, z_idx,
+                edge_index, batch_data.z,
                 num_types=self.cfg["model"]["num_types"],
                 type_to_z=TYPE_TO_Z,
+                batch=batch_data.batch,
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(

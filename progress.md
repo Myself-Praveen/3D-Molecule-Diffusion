@@ -1,51 +1,85 @@
 # Project Progress & Rationale
 
-**Project:** Novel Molecular Generation using Graph GANs/Diffusion for BBB Permeability  
-**Current Phase:** Planning & Strategy Completed  
-**Next Up:** Phase 1 (Data Pipeline Implementation)
+**Project:** Novel Molecular Generation using Graph GANs/Diffusion for BBB Permeability
+**Current Phase:** Phases 1–3 implemented; QM9 geometry retraining in progress
+**Last Updated:** 19 Sep 2026 (CPU-only machine, `node1`)
 
 ---
 
-## 1. What Has Been Done So Far? (The 75% Completed Code)
-You and your team have already built an incredible **75% of the heavy machinery** for this project! The codebase currently has a fully working implementation of:
-1. **3D Diffusion Mathematics:** The complex logic to build molecules atom-by-atom in 3D space (`diffusion.py`).
-2. **Equivariant Graph Neural Networks (EGNN):** The core AI brain that understands 3D chemistry (`egnn.py`).
-3. **Federated Learning System:** The server-client architecture that allows training across different simulated hospitals without sharing data (`fed_train.py`, `server.py`, `client.py`).
+## 1. Where We Started (The 75% Completed Code)
 
-**So what is missing?** Right now, this amazing AI infrastructure is trained on a generic chemistry dataset (called QM9) and just generates random molecules. 
+The codebase arrived with the heavy machinery built and tested:
+1. **3D Diffusion Mathematics** — centered DDPM over coordinates + categorical TypeDDPM over atom types (`src/models/diffusion.py`), ancestral DDPM + DDIM samplers (`src/sampling.py`).
+2. **Equivariant GNN denoiser** — timestep-conditioned EGNN with joint coordinate/type heads and a bond head (`src/models/egnn.py`).
+3. **Federated Learning System** — Flower-compatible clients, formula-partitioned IID/non-IID QM9 splits, weighted FedAvg/FedProx, personal heads, λ₂/λ₃ multi-objective losses (`fed_train.py`, `src/fed/`, `src/objectives.py`).
+4. **MOSES-style evaluation** — Validity, Uniqueness, Novelty, IntDiv, QED, LogP, SNN (`src/utils/evaluation.py`, `generate_and_eval.py`).
 
-We created a detailed **Implementation Plan** (`implementation.md`) to map out exactly how to build the final **25%** of the code. We also pushed this plan to your shared GitHub repository.
+The missing 25% — BBB datasets, targeted (conditioned) generation, and the paper experiments — is mapped in `implementation.md` (Phases 1–8). The end goal is unchanged: a **"Guided AI Designer"** you can instruct (*"generate 100 BBB-permeable molecules"*), trained with privacy-preserving federated learning. Nobody has combined 3D federated diffusion with BBB permeability before — that is the publication.
 
-## 2. What is the Final 25% We Are Building?
-To make this a top-tier publishable paper matching your topic *"Novel Molecular generation using Graph GANs for BBB Permeability"*, we need to adapt your existing heavy machinery specifically for the **Blood-Brain Barrier (BBB)**.
+## 2. Environment & QM9 Baseline (Done)
 
-Our strategy is to add:
-1. **BBB Datasets:** Swapping out the generic QM9 dataset for specific brain-permeability datasets.
-2. **Targeted Generation (Conditioning):** Giving your existing 3D Diffusion model the ability to take instructions (e.g., "Make this BBB-permeable") rather than just guessing.
+- Built a local `.venv` (Python 3.12): CPU PyTorch 2.14, PyG, e3nn, RDKit, plus Phase-1 additions `deepchem`/`ogb`/`seaborn`, `pytest`.
+- Downloaded QM9 into `data/` (130,831 processed molecules). `test_setup.py` reports SUCCESS.
+- **Path verification:** all training paths (`data.root`, `checkpoint.dir`, `output_dir`, `partition_cache`) confirmed correct and relative to repo root.
+- **Bugs fixed in `train.py`:** (a) `random_split` lengths summed to `n + n_val` (always crashed) → `[n_train, n_val, n_test]`; (b) `torch DataLoader` can't batch PyG graphs → `torch_geometric.loader.DataLoader`; (c) added `max_molecules` subsampling (mirrors `fed_train.py`).
 
-**Nobody has combined your completed 3D Federated AI with BBB permeability before.** This is what will make your paper stand out and get published.
+## 3. Smoke Runs & Resumable Training (Done)
 
-## 3. Which Dataset Are We Using?
-We are going to use two datasets:
-1. **BBBP (MoleculeNet):** Contains about 2,039 molecules.
-2. **B3DB:** A newer, larger dataset containing about 7,800 molecules.
+- Central smoke (500 mols, 2 epochs) and federated smoke (IID + non-IID, 2 rounds) all converge cleanly.
+- Because full runs exceed 1-hour sessions, training is now **resumable in fixed chunks**: `train.py --resume --run_epochs N` (`checkpoints/last.pt` every epoch: model+optimizer+scheduler+best/patience/RNG, atomic writes) and `fed_train.py --resume --run_rounds N` (`last_global.pt` + appended `history.json`). Chunking verified by kill-and-resume tests. Use `setsid` + instant return for background launches (a tool-timeout once killed a run; resume lost nothing).
+- Helper: `scripts/check_status.py` prints central + federated progress in one command.
 
-**Source of the datasets:** 
-- The BBBP dataset will be downloaded using standard Python chemistry libraries like `deepchem` or `ogb`. 
-- The B3DB dataset is open-source and available as a CSV file on GitHub.
+## 4. Full QM9 Training, Round 1 (Done — Superseded)
 
-## 4. Why This Specific Dataset?
-Both of these datasets contain a specific label for every molecule: **BBB+ (can enter the brain)** or **BBB- (cannot enter the brain)**.
+- **Central:** 100 epochs (~1.5h). Early stopping fired at epoch 36 (patience 10 after a 12-epoch plateau), so patience was raised to 1000 to force the full run. Best val **1.3161** (epoch 49).
+- **Federated:** IID 50 rounds (server 1.37→1.35, val 1.46) and non-IID 50 rounds with FedProx μ=0.1 (server 1.44→1.37, val 1.48). Mechanics verified; federated learns glacially vs central (fresh Adam per round, constant LR) — an open tuning item, not a bug.
+- **Eval table v1 (RETRACTED — see §7):** central 85.7%, IID 86.0%, non-IID 36.1% validity. These numbers were measured with the wrong atom mapping and are invalid; the honest comparison is being redone.
 
-To train our AI to design brain drugs, we need a dataset that acts as an "answer key". The BBBP dataset from MoleculeNet is the global gold standard that all researchers use to test their models. By using it, we ensure that reviewers of your research paper will trust your results. We are adding the B3DB dataset because it is larger, which proves our AI can handle big, diverse sets of data.
+## 5. Eval Persistence & Status Tooling (Done)
 
-## 5. What is the Expected Outcome?
-Currently, the codebase just generates random 3D molecules. 
+- `generate_and_eval.py` accepts federated checkpoints (`global_state` in addition to `model_state_dict`) and `--output_dir` saving `metrics.json` (numbers + LaTeX row + run config), `smiles.txt`, and `molecules.sdf` with 3D conformers (`outputs/eval_*/`).
 
-Once we finish the implementation, our expected outcome is a **"Guided AI Designer"**. 
-- You will be able to tell the AI: *"Generate 100 new molecules that are BBB-permeable."*
-- The AI will use a technique called *Classifier-Free Guidance* to steer the 3D diffusion process, ensuring that the vast majority of the new molecules it creates have the right shape and chemical properties to slip through the Blood-Brain Barrier. 
-- All of this will happen while proving that the AI can learn effectively in a privacy-preserving (Federated) setup.
+## 6. Phase 1 — BBB Dataset Pipeline (Done, Committed `2bbf472`)
 
-## 6. What's Next?
-The very next step (Phase 1) is to write the code that downloads the BBBP dataset. Because datasets usually provide molecules as text strings (called SMILES), we have to write a pipeline that automatically converts these text strings into real 3D geometric shapes so our 3D Diffusion model can understand them.
+- New `src/dataset_bbb.py`: ETKDGv3+MMFF SMILES→3D conversion to PyG `Data(pos, z, y, qed, logp, tpsa, mw, smiles)`, Murcko-scaffold 80/10/10 splits, kill-safe incremental `processed_3d.pt` cache, train-set property stats + z-scoring. `tests/test_bbb_pipeline.py` (16 tests).
+- **Results:** BBBP 1628/205/205 (76.4% BBB+, 0.6% 3D failures); B3DB 6144/770/779 (63.5% BBB+, 1.5% failures); geometry sane (mean NN ~1.1Å); scaffolds disjoint across splits.
+- **Bugs fixed:** this RDKit's `MurckoScaffoldSmiles` takes `mol=` as keyword (positional call collapsed every split to all-train); B3DB label header `BBB+/BBB-` added to detection; cache path de-nested.
+- **Deviation:** `deepchem` is installed per spec but never imported at runtime (it drags in tensorflow); loading uses direct CSV download + own scaffold split.
+
+## 7. Phase 2 — Conditioning (Done, Committed `5b17b0e`) + Two Major Discoveries
+
+- **Built:** conditioned EGNN (`cond_dim`, class + [QED, LogP, tPSA, MW] → timestep embedding, `cond=None` unconditional path), classifier-free guidance in `sampling.py` (`guidance_scale`, verified bit-identical at 0.0), trainer label dropout + cond extraction (`src/fed/trainer.py`). `tests/test_phase2_conditioning.py` (11 tests). All 69 tests green.
+- **Discovery A — the coordinate head never learned.** `forward` aliased `initial_pos = pos` (no copy) while `encode` rebinds locally, so `noise_pred` was exactly **0** with no gradient path (proven: all-zero output + autograd error). Every prior run trained only atom types (`pos_loss≈1.0` was the constant baseline). Fixed via `clone()` + `encode` returning `(h, updated_pos)`; zero-init identity behavior preserved.
+- **Discovery B — model indices ARE atomic numbers.** PyG QM9 `z` = raw Z {1:H, 6:C, 7:N, 8:O, 9:F} (QM9 contains only these; classes 0,2–5 are dead). The eval-time `QM9_ATOMIC_NUMBERS` remap shifted every element (H→C, C→S…) — this fabricated the §4 validity table (old model: 0.0 bonds/mol fragments that sanitize trivially) and zeroed the retrained model. Fixed to identity mapping; trainer `TYPE_TO_Z` corrected; oracle keeps its frozen self-consistent dense map (still 0.92 AUROC, untouched).
+
+## 8. Phase 3 — BBB Oracle (Done, Committed `ac8a0ec`)
+
+- New `src/models/bbb_classifier.py` (3-layer GCN + mean-pool + MLP) and `scripts/train_bbb_classifier.py` (BCE, pos-weighted, early stop on val AUROC → `models/bbb_oracle.pt`, gitignored). `tests/test_bbb_oracle.py` (8 tests).
+- **Result:** best val AUROC **0.9116**, TEST **0.9218** (gate ≥0.88 ✓, literature ~0.92 ✓); caffeine (known BBB+) scores > 0.5.
+- **Bug fixed:** first inference used heavy-atom bond topology while training saw H-inclusive distance graphs (caffeine scored 0.13). Inference now mirrors training exactly (AddHs → ETKDG → distance edges) plus `data_to_input()` for scoring generated molecules with zero shift. No retrain needed — the model was fine.
+
+## 9. Geometry Retraining — Current Status (In Progress)
+
+Retraining central QM9 with the fixed coordinate head (old checkpoints archived to `checkpoints/pre_coordfix/`, `checkpoints/coordfix_v1/`):
+1. **v1 (no λ₂):** best val 0.666 (vs 1.316 dead-head), type head 99.8% accurate — but generation 0% valid: **26.1 bonds/mol vs ~19 true** (over-connected clumps; H with valence 4).
+2. **λ₂=0.01 attempt:** no effect (25.0 bonds/mol) — diagnosed the surrogate as blind: kNN-capped counting scored real 0.99 vs clump 1.06. Fixed `soft_valence_penalty` to all-pairs counting (real **0.046** vs clump **0.081**), recalibrated λ₂ **0.01 → 1.0**, added live `quick_valid` probes (DDIM-20) every 10 epochs in `train.py` + a clump-vs-chain separation test.
+3. **Sampler hardening** (NaN crash seen with confident models): sanitized `posterior_probs`, logit clamp ±15, bulletproof multinomial fallback.
+4. **Running now:** fresh 100-epoch run, λ₂=1.0, pid logged in `logs/central_lambda2_v2.pid` (prior `lambda2_v1` checkpoints archived). Previous λ₂=0.01 run archived to `checkpoints/lambda2_v1/`.
+
+## 10. Commit History
+
+- `c1a1ef5` resumable chunked training + central split/loader fixes
+- `9bfb020` federated checkpoints + persistent eval outputs
+- `2bbf472` Phase 1 BBB dataset pipeline
+- `5b17b0e` Phase 2 conditioning + dead-coordinate-head fix
+- `ac8a0ec` Phase 3 BBB oracle
+- `9b62eb3` atom-index convention fix + sampler hardening
+- `6ebc70e`→`8a1d892` λ₂ central training (after rebase onto remote `8fb2830` QM9 analysis doc); remote and local in sync
+- Pending: λ₂=1.0 code (surrogate fix, validity probe, config) + v2 eval records
+
+## 11. What's Next
+
+1. **Immediate:** read the λ₂=1.0 verdict — `quick_valid` in `logs/central_lambda2_v2.log`, then full eval to a fresh `outputs/` dir for the honest before/after Table I.
+2. **If validity recovers:** fed retrains with the winning recipe (both fed globals are still coord-dead), then Phase 4 extended metrics (BBB% via the oracle, scaffold diversity, Lipinski, CNS-MPO).
+3. **If clumping persists:** capacity/schedule escalation (larger EGNN, longer run) or eps-form sampler work — the valves are identified, not the diagnosis.
+4. **Then:** Phase 5 BBB configs + sweeps, Phase 6 entry-point wiring (conditioned/BBB training + guided generation), Phase 7 figures, Phase 8 tests + paper write-up.

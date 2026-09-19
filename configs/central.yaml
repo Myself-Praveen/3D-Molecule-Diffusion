@@ -28,9 +28,14 @@ training:
   weight_decay: 1.0e-5
   kNN: 4
   type_loss_weight: 0.5   # lambda in L = L_pos + lambda * L_type
-  valence_loss_weight: 0.01  # λ₂ soft valence penalty (geometry spread)
+  valence_loss_weight: 1.0   # λ₂ soft valence penalty (all-pairs; needs ~1 to matter)
   diversity_loss_weight: 0.0 # λ₃ diversity regularizer (off for now)
   patience: 1000          # effectively disable early stop for full 100-epoch run
+
+generation:
+  eval_every: 10          # quick validity probe cadence during training (0 = off)
+  num_samples: 16         # probe molecules (fixed 18-atom for comparability)
+  ddim_steps: 20
 
 checkpoint:
   dir: checkpoints

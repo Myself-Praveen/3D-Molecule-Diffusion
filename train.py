@@ -49,6 +49,34 @@ def save_checkpoint(state: dict, path: Path) -> None:
     tmp_path.replace(path)
 
 
+@torch.no_grad()
+def _quick_validity(
+    model, coord_ddpm, type_ddpm, device,
+    num_samples: int = 16, ddim_steps: int = 20,
+) -> float:
+    """Sample a few molecules and return validity % (geometry health probe)."""
+    from src.sampling import sample_molecules
+    from src.utils.evaluation import coords_and_types_to_mol, validity
+
+    model.eval()
+    counts = torch.full((num_samples,), 18, dtype=torch.long)
+    try:
+        pos, z = sample_molecules(
+            model, coord_ddpm, type_ddpm, counts,
+            device=device, ddim_steps=ddim_steps,
+        )
+    except Exception:
+        return 0.0
+    mols = []
+    off = 0
+    for _ in range(num_samples):
+        mols.append(coords_and_types_to_mol(
+            pos[off:off + 18].numpy(), z[off:off + 18].numpy().astype(int),
+        ))
+        off += 18
+    return float(validity(mols)) * 100.0
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
@@ -238,6 +266,7 @@ def train_diffusion(
                     edge_index, batch_data.z,
                     num_types=model_cfg["num_types"],
                     type_to_z=TYPE_TO_Z,
+                    batch=batch_data.batch,
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(
@@ -285,6 +314,17 @@ def train_diffusion(
         avg_val_type = val_type_loss / max(len(val_loader), 1)
         avg_val_loss = avg_val_pos + lambda_type * avg_val_type
 
+        # ---- Periodic quick validity probe (tracks geometry quality live) ----
+        gen_cfg = cfg.get("generation", {})
+        gen_every = int(gen_cfg.get("eval_every", 0))
+        quick_valid = None
+        if gen_every > 0 and (epoch % gen_every == 0 or epoch == end_epoch):
+            quick_valid = _quick_validity(
+                model, coord_ddpm, type_ddpm, device,
+                num_samples=int(gen_cfg.get("num_samples", 16)),
+                ddim_steps=int(gen_cfg.get("ddim_steps", 20)),
+            )
+
         lr_now = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch {epoch:4d} | "
@@ -292,6 +332,7 @@ def train_diffusion(
             f"baseline={baseline_mse:.4f} | "
             f"val_pos={avg_val_pos:.4f}  val_type={avg_val_type:.4f}  val={avg_val_loss:.4f} | "
             f"lr={lr_now:.2e}"
+            + (f" | quick_valid={quick_valid:.1f}%" if quick_valid is not None else "")
         )
 
         # ---- Checkpointing (update best/counter FIRST, then save last.pt once) ----

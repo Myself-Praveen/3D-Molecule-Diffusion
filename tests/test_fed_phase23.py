@@ -258,15 +258,32 @@ class TestObjectives:
         pos = torch.tensor([[0.0, 0, 0], [0.9, 0, 0], [1.9, 0, 0]])
         pairs = torch.combinations(torch.arange(n)).T
         probs_high = torch.full((n, 10), 0.05)
-        probs_high[:, 1] = 0.55  # mostly H (valence 1): over-bonding violation
+        probs_high[:, 1] = 0.55  # mostly H (Z=1, valence 1): over-bonding violation
         loss_h = soft_valence_penalty(probs_high.requires_grad_(True), pos, pairs,
                                       torch.zeros(n, dtype=torch.long), 10)
         probs_low = torch.full((n, 10), 0.02)
-        probs_low[:, 2] = 0.82   # mostly C (valence 4): no violation
+        probs_low[:, 6] = 0.82   # mostly C (Z=6, valence 4): no violation
         loss_c = soft_valence_penalty(probs_low, pos, pairs,
                                       torch.zeros(n, dtype=torch.long), 10)
         assert loss_h.item() > loss_c.item() or loss_c.item() == 0.0
         assert loss_h.requires_grad
+
+    def test_valence_all_pairs_separates_clumps(self):
+        # Dense clump (all pairs ~1A) must score higher than a realistic
+        # chain (bonded ~1.2A, non-bonded well separated).
+        torch.manual_seed(0)
+        n = 9
+        clump = torch.randn(n, 3) * 0.5
+        chain = torch.zeros(n, 3)
+        chain[:, 0] = torch.arange(n) * 1.4
+        batch = torch.zeros(n, dtype=torch.long)
+        probs = torch.full((n, 10), 0.02)
+        probs[:, 6] = 0.82  # carbon-like
+        pairs = torch.combinations(torch.arange(n)).T
+        z = torch.full((n,), 6)
+        pen_clump = soft_valence_penalty(probs, clump, pairs, z, 10, batch=batch)
+        pen_chain = soft_valence_penalty(probs, chain, pairs, z, 10, batch=batch)
+        assert pen_clump.item() > pen_chain.item(), (pen_clump.item(), pen_chain.item())
 
     def test_diversity_maximal_for_identical_embeddings(self):
         h = torch.randn(3, 8)

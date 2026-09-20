@@ -242,7 +242,10 @@ def _save_eval_outputs(
 
     sdf_path = out / "molecules.sdf"
     writer = Chem.SDWriter(str(sdf_path))
-    writer.SetKekulize(True)
+    # Kekulization fails on fragment-soup outputs; keep it off so the SDF
+    # faithfully records every valid molecule (validity itself is measured
+    # in-eval by connectivity(), not by SDF round-tripping).
+    writer.SetKekulize(False)
     saved = 0
     for mol, smi in zip(
         [m for m in mols if m is not None], valid_smiles,

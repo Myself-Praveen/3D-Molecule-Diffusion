@@ -1,0 +1,24 @@
+{
+  "metrics": {
+    "Validity": 99.4,
+    "Uniqueness": 63.0784708249497,
+    "Novelty": 63.0784708249497,
+    "IntDiv_p": 0.3100022040543666,
+    "QED": 0.40124483754822443,
+    "LogP": 0.2571425150905433,
+    "SNN": 0.08436870122146968,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 0.11871227364185111,
+    "ConnectedFrac": 0.0
+  },
+  "latex_row": "99.4000  & 63.0785  & 63.0785  & 0.3100  & 0.4012  & 0.2571  & 0.0844 \\\\",
+  "num_valid": 994,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "checkpoints/pre_coordfix/best.pt",
+    "num_samples": 1000,
+    "ddim_steps": 50,
+    "eta": 0.0,
+    "seed": 42
+  }
+}

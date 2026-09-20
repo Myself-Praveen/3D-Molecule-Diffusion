@@ -286,6 +286,38 @@ def snn(
 # Combined evaluation
 # ---------------------------------------------------------------------------
 
+def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
+    """Fragment-aware geometry metrics over valid molecules.
+
+    Plain ``Validity`` (RDKit sanitization) passes disconnected single atoms,
+    so a model emitting fragment soup can score ~99% while generating zero
+    real molecules. These metrics close that loophole:
+
+    - ``ConnectedValidity``: % of ALL generated molecules that are valid AND
+      a single connected fragment (the honest headline number).
+    - ``BondsPerMol``: mean bond count over valid molecules (QM9 truth ~19
+      for 18-atom molecules; fragments score ~0-2, clumps ~26+).
+    - ``ConnectedFrac``: % of valid molecules that are single-fragment.
+    """
+    valid = [m for m in mols if m is not None]
+    total = len(mols)
+    if not valid or total == 0:
+        return {"ConnectedValidity": 0.0, "BondsPerMol": 0.0, "ConnectedFrac": 0.0}
+    bonds, connected = [], 0
+    for m in valid:
+        try:
+            bonds.append(m.GetNumBonds())
+            if len(Chem.GetMolFrags(m)) == 1:
+                connected += 1
+        except Exception:
+            bonds.append(0)
+    return {
+        "ConnectedValidity": 100.0 * connected / total,
+        "BondsPerMol": float(sum(bonds) / len(bonds)),
+        "ConnectedFrac": 100.0 * connected / len(valid),
+    }
+
+
 def evaluate(
     mols: Sequence[Chem.Mol | None],
     train_smiles: set[str],
@@ -300,6 +332,7 @@ def evaluate(
         "QED": mean_qed(mols),
         "LogP": mean_logp(mols),
         "SNN": snn(mols, train_mols),
+        **connectivity(mols),
     }
 
 

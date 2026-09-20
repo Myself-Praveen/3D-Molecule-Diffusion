@@ -1,0 +1,24 @@
+{
+  "metrics": {
+    "Validity": 24.3,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8998578808631308,
+    "QED": 0.44239403705910546,
+    "LogP": -0.03350971193415641,
+    "SNN": 0.16907089396259303,
+    "ConnectedValidity": 1.6,
+    "BondsPerMol": 15.127572016460906,
+    "ConnectedFrac": 6.584362139917696
+  },
+  "latex_row": "24.3000  & 100.0000  & 100.0000  & 0.8999  & 0.4424  & -0.0335  & 0.1691 \\\\",
+  "num_valid": 243,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "checkpoints/lambda2_v1/best.pt",
+    "num_samples": 1000,
+    "ddim_steps": 50,
+    "eta": 0.0,
+    "seed": 42
+  }
+}

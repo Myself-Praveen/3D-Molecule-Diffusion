@@ -38,13 +38,13 @@ _BOND_TYPE_MAP: dict[int, Chem.BondType] = {
     4: Chem.BondType.AROMATIC,
 }
 
-# Distance thresholds for heuristic bond assignment when bond_logits are
-# unavailable.  Values in Angstroms, tuned for QM9 molecules.
-_DISTANCE_THRESHOLDS = [
-    (1.8, Chem.BondType.SINGLE),
-    (1.5, Chem.BondType.DOUBLE),
-    (1.3, Chem.BondType.TRIPLE),
-]
+# Covalent radii (Cordero et al. 2008) in Å for the QM9 element set plus
+# common extras. A pair is bonded iff ``dist <= r_i + r_j + _BOND_TOLERANCE``.
+_COVALENT_RADII: dict[int, float] = {
+    1: 0.31, 6: 0.76, 7: 0.71, 8: 0.66, 9: 0.57,
+    15: 1.07, 16: 1.05, 17: 1.02, 35: 1.20, 53: 1.39,
+}
+_BOND_TOLERANCE: float = 0.45
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,8 @@ def coords_and_types_to_mol(
         _add_bonds_from_logits(mol, pos, atomic_numbers, valid_atoms,
                                bond_logits, distance_cutoff)
     else:
-        _add_bonds_from_distance(mol, pos, valid_atoms, distance_cutoff)
+        _add_bonds_from_distance(mol, pos, atomic_numbers, valid_atoms,
+                                 distance_cutoff)
 
     # Try to sanitise
     if sanitize:
@@ -143,23 +144,37 @@ def _add_bonds_from_logits(
 def _add_bonds_from_distance(
     mol: Chem.RWMol,
     pos: np.ndarray,
+    atomic_numbers: np.ndarray,
     valid_atoms: list[int],
     distance_cutoff: float,
 ) -> None:
-    """Heuristic bond assignment: strongest bond type within distance cutoff."""
+    """Element-aware bond assignment via covalent radii.
+
+    A pair is bonded iff ``dist <= r_i + r_j + _BOND_TOLERANCE`` (and within
+    the hard ``distance_cutoff`` cap). This excludes the contacts a plain
+    distance cutoff bonds spuriously — methyl H···H ≈ 1.78 Å, benzene 1-3
+    C···C ≈ 2.42 Å — which made even REAL QM9 molecules fail sanitization
+    (ground-truth control: 0.7% valid at cutoff 2.5 Å, 20.7% at 1.8 Å).
+
+    Bond order is NOT inferable from distance alone (C–H 1.09 Å vs C≡C 1.20 Å
+    overlap), so distance-derived bonds are SINGLE; bond types come from the
+    bond head via ``_add_bonds_from_logits`` when available. Single-bond
+    topology preserves valence legality (e.g. ethene as all-single has C
+    valence 3 ≤ 4) while reproducing the correct molecular graph skeleton.
+    """
     N = len(valid_atoms)
     for i_loc in range(N):
         for j_loc in range(i_loc + 1, N):
-            dist = np.linalg.norm(pos[valid_atoms[i_loc]] - pos[valid_atoms[j_loc]])
+            i_orig, j_orig = valid_atoms[i_loc], valid_atoms[j_loc]
+            dist = float(np.linalg.norm(pos[i_orig] - pos[j_orig]))
             if dist > distance_cutoff:
                 continue
-            # Assign the strongest bond type whose threshold exceeds distance.
-            bond_type = Chem.BondType.SINGLE  # default if within cutoff
-            for thresh, bt in _DISTANCE_THRESHOLDS:
-                if dist <= thresh:
-                    bond_type = bt
-                    break
-            mol.AddBond(i_loc, j_loc, bond_type)
+            ri = _COVALENT_RADII.get(int(atomic_numbers[i_orig]))
+            rj = _COVALENT_RADII.get(int(atomic_numbers[j_orig]))
+            if ri is None or rj is None:
+                continue
+            if dist <= ri + rj + _BOND_TOLERANCE:
+                mol.AddBond(i_loc, j_loc, Chem.BondType.SINGLE)
 
 
 # ---------------------------------------------------------------------------

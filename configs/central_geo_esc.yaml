@@ -1,0 +1,48 @@
+# Geometry retraining, escalated (progress.md §11.3: clumping persisted through
+# λ₂=1.0 v2 — quick_valid 0.0% at every probe). Capacity/schedule escalation:
+# node_dim/edge_dim 64→128, num_layers 4→6, epochs 100→150.
+# λ₂=1.0 (all-pairs surrogate), probe cadence and seed kept identical to v2
+# so quick_valid/val numbers stay comparable. Resume: --resume --run_epochs N.
+
+seed: 42
+
+data:
+  root: data
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 128         # escalated 64→128
+  edge_dim: 128         # escalated 64→128
+  num_layers: 6         # escalated 4→6
+  time_dim: 32
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 150           # escalated 100→150
+  batch_size: 32
+  lr: 3.0e-4            # 1e-3 NaN-diverged at epoch 1 on the 128-dim/6-layer model
+                        # (v2's 64/4 was stable); standard lr cut for scaled-up capacity
+  grad_clip_norm: 5.0   # rare pathological batches explode grads on the bigger model;
+                        # clipped + NaN-guarded in train.py (off by default elsewhere)
+  weight_decay: 1.0e-5
+  kNN: 4
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0   # λ₂ all-pairs surrogate, recalibrated in v2
+  diversity_loss_weight: 0.0 # λ₃ off (unchanged)
+  patience: 1000             # disable early stop; run the full schedule
+
+generation:
+  eval_every: 10           # quick_valid probe cadence (unchanged, comparability)
+  num_samples: 16
+  ddim_steps: 20
+
+checkpoint:
+  dir: checkpoints
+  save_every: 5

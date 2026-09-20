@@ -170,6 +170,10 @@ def train_diffusion(
     lambda_type = train_cfg.get("type_loss_weight", 0.5)
     lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
     lambda_diversity = float(train_cfg.get("diversity_loss_weight", 0.0))
+    # 0 = off (legacy behavior). >0 clips global grad norm each step — needed for
+    # escalated-capacity models where a rare pathological batch can explode grads
+    # and NaN-poison the weights (observed at 128-dim/6-layer, absent at 64/4).
+    grad_clip = float(train_cfg.get("grad_clip_norm", 0.0))
 
     # ---- Resume handling (explicit --resume only) ---------------------------
     start_epoch = 1
@@ -274,6 +278,22 @@ def train_diffusion(
                 )
 
             loss.backward()
+
+            # NaN/Inf guard: skip a batch whose gradients exploded instead of
+            # letting one pathological batch poison the weights for the rest
+            # of the run (all losses after such a step print NaN).
+            bad_grad_params = [
+                name for name, p in model.named_parameters()
+                if p.grad is not None and not torch.isfinite(p.grad).all()
+            ]
+            if bad_grad_params:
+                shown = ", ".join(bad_grad_params[:5])
+                more = "…" if len(bad_grad_params) > 5 else ""
+                print(f"  ! non-finite grads in [{shown}{more}] — batch skipped")
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             total_pos_loss += pos_loss.item()
             total_type_loss += type_loss.item()

@@ -1,0 +1,64 @@
+# Federated BBB training — IID partition, FedAvg (Phase 5).
+# Privacy-preserving BBB-targeted generation across K data silos.
+# FedProx off here (see fed_bbb_niid.yaml for the non-IID variant).
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  max_molecules: 0
+  val_frac: 0.1
+
+fed:
+  num_clients: 4
+  mode: iid
+  rounds: 50
+  local_epochs: 1
+  proximal_mu: 0.0
+  personal_heads: false
+  eval_every: 5
+  sample_eval_every: 10
+
+model:
+  num_types: 10
+  node_dim: 128
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32
+  num_cond_classes: 2
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  lr: 3.0e-4
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  batch_size: 64
+  kNN: 6
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 5    # λ₂ = 0 for rounds 1-5, linear ramp 6-10
+  diversity_loss_weight: 0.01
+  patience: 20
+
+generation:
+  num_samples: 32
+  max_atoms: 25               # BBB molecules are larger than QM9
+  ddim_steps: 50
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+output_dir: outputs/fed_bbb_iid
+partition_cache: data/partitions_bbb

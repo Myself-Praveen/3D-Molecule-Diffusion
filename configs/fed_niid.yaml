@@ -4,6 +4,7 @@
 seed: 42
 
 data:
+  dataset: qm9           # explicit selector (Phase 6 dispatch; qm9 default)
   root: data
   max_molecules: 0        # >0 subsamples QM9 for fast smoke runs
   val_frac: 0.1           # shared global validation fraction
@@ -24,6 +25,10 @@ model:
   edge_dim: 128
   num_layers: 6         # (was 4)
   time_dim: 32
+  cond_dim: 0             # 0 = unconditional (backward compatible)
+
+conditioning:
+  enabled: false
 
 diffusion:
   num_steps: 1000

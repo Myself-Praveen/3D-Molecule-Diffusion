@@ -1,0 +1,64 @@
+# Centralized BBB training configuration (Phase 5).
+# BBBP with property conditioning (Phase 2) for BBB+-targeted generation.
+# Model recipe mirrors the winning QM9 geometry run (geo_esc: 128-dim,
+# 6 layers) with the x0-valence formulation (train.py) and the trained
+# BBB oracle (models/bbb_oracle.pt) for BBB% evaluation.
+#
+#   .venv/bin/python train.py --config configs/central_bbb.yaml --run_epochs 5
+#
+# NOTE: train.py BBB dataset dispatch lands in Phase 6; until then this
+# config documents the intended recipe and validates structurally.
+
+seed: 42
+
+data:
+  dataset: bbbp            # "qm9" | "bbbp" | "b3db" (dispatch in Phase 6)
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10         # raw-Z indices {1,6,7,8,9}; heavies fall back to C
+  node_dim: 128         # larger for BBB molecules (avg ~25 atoms vs QM9 ~18)
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32          # >0 enables property conditioning (Phase 2)
+  num_cond_classes: 2   # BBB+ / BBB-
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1    # 10% unconditional for classifier-free guidance
+  guidance_scale: 2.0   # used at inference time (generate_and_eval)
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 200
+  batch_size: 64
+  lr: 3.0e-4             # scaled-up models diverge at 1e-3 (geo_esc lesson)
+  grad_clip_norm: 5.0     # NaN guard, mirrors geo_esc recipe
+  weight_decay: 1.0e-5
+  kNN: 6                # more neighbors for larger BBB molecules
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0    # λ₂ x0-formulation, all-pairs surrogate
+  valence_tau: 200            # gate: only t < 200 contributes
+  valence_warmup_rounds: 0    # central has no rounds; kept for schema parity
+  diversity_loss_weight: 0.01 # λ₃ small (uniqueness already 100% on QM9)
+  patience: 20
+
+generation:
+  eval_every: 10          # quick_valid probe cadence
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt   # trained in Phase 3 (val AUROC 0.9116)
+
+checkpoint:
+  dir: checkpoints/bbb
+  save_every: 10

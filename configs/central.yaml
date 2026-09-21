@@ -4,6 +4,7 @@
 seed: 42
 
 data:
+  dataset: qm9           # explicit selector (Phase 6 dispatch; qm9 default)
   root: data
   train_frac: 0.8
   val_frac: 0.1
@@ -15,6 +16,10 @@ model:
   edge_dim: 64
   num_layers: 4
   time_dim: 32
+  cond_dim: 0             # 0 = unconditional (backward compatible)
+
+conditioning:
+  enabled: false
 
 diffusion:
   num_steps: 1000

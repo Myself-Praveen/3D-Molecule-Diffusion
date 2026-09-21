@@ -1,0 +1,16 @@
+# Sweep: number of clients K x partition mode (Phase 5).
+# Runner (Phase 6 scripts/run_sweep.py) crosses the grid with seeds [42,123,456]:
+#   for K in {1,2,4,7} x mode in {iid, niid}: fed_train.py on the BBBP recipe.
+# K=1/mode=iid is the centralized-equivalent control arm.
+sweep: K_mode
+base_config: configs/fed_bbb_niid.yaml
+grid:
+  fed.num_clients: [1, 2, 4, 7]
+  fed.mode: [iid, niid]
+seeds: [42, 123, 456]
+metrics:
+  - Validity
+  - ConnectedValidity
+  - BBB%
+  - ScaffDiv
+  - server_loss

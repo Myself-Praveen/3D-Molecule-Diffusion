@@ -1,0 +1,25 @@
+# Ablation study: 7 configurations against the full model (Phase 5).
+# Each arm overrides base_config fields; the runner (scripts/run_ablation.py)
+# trains central_bbb.yaml variants and reports Validity/ConnectedValidity/BBB%.
+# (Paper Fig. 4.)
+base_config: configs/central_bbb.yaml
+ablations:
+  full_model: {}                                            # baseline, no changes
+  no_conditioning:
+    conditioning.enabled: false
+    model.cond_dim: 0
+  no_fedprox:
+    fed.proximal_mu: 0.0                                    # (fed runs only)
+  no_personal_heads:
+    fed.personal_heads: false                               # (fed runs only)
+  no_valence_penalty:
+    training.valence_loss_weight: 0.0
+  no_diversity_loss:
+    training.diversity_loss_weight: 0.0
+  no_multi_obj:
+    training.valence_loss_weight: 0.0
+    training.diversity_loss_weight: 0.0
+  fewer_layers:
+    model.num_layers: 2
+  no_3d:
+    model.flatten_to_2d: true   # special flag (Phase 6): zero-out pos input

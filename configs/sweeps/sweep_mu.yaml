@@ -1,0 +1,13 @@
+# Sweep: FedProx proximal strength μ (Phase 5).
+# μ = 0 is pure FedAvg; larger μ anchors clients to the global model.
+# Run on fed_bbb_niid.yaml (non-IID is where μ matters).
+sweep: proximal_mu
+base_config: configs/fed_bbb_niid.yaml
+grid:
+  fed.proximal_mu: [0.0, 0.01, 0.1, 1.0]
+seeds: [42, 123, 456]
+metrics:
+  - Validity
+  - ConnectedValidity
+  - BBB%
+  - server_loss

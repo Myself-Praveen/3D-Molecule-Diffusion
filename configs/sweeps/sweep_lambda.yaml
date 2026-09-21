@@ -1,0 +1,16 @@
+# Sweep: multi-objective Pareto grid λ₂ (validity) x λ₃ (diversity) (Phase 5).
+# Produces the Validity-vs-Uniqueness Pareto front (paper Fig. 2).
+# NOTE (v2 finding): λ₂ penalizes the denoised-x0 prediction (low-noise
+# gated); keep valence_tau at 200 for all arms so only the weights vary.
+sweep: lambda_pareto
+base_config: configs/central_bbb.yaml
+grid:
+  training.valence_loss_weight: [0.0, 0.1, 0.5, 1.0, 2.0]
+  training.diversity_loss_weight: [0.0, 0.01, 0.05]
+seeds: [42]
+metrics:
+  - Validity
+  - ConnectedValidity
+  - Uniqueness
+  - IntDiv_p
+  - BBB%

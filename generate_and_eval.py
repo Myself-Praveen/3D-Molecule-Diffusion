@@ -92,6 +92,8 @@ def main() -> None:
     parser.add_argument("--output_dir", type=str, default=None,
                         help="If given, save metrics.json, smiles.txt and "
                              "molecules.sdf there (created if needed)")
+    parser.add_argument("--bbb_oracle", type=str, default=None,
+                        help="Path to trained BBB oracle (.pt); enables BBB% metric")
     args = parser.parse_args()
 
     # Config
@@ -183,7 +185,20 @@ def main() -> None:
             offset += count
 
     # Evaluate
-    metrics = evaluate(all_mols, train_smiles, train_mols)
+    bbb_classifier = None
+    if args.bbb_oracle:
+        from src.models.bbb_classifier import BBBClassifier
+
+        bbb_ckpt = torch.load(args.bbb_oracle, map_location=device,
+                              weights_only=False)
+        bbb_classifier = BBBClassifier(
+            hidden_dim=int(bbb_ckpt.get("hidden_dim", 128))).to(device)
+        bbb_classifier.load_state_dict(bbb_ckpt["model_state_dict"])
+        bbb_classifier.eval()
+        print(f"BBB oracle loaded from {args.bbb_oracle} "
+              f"(val AUROC {bbb_ckpt.get('val_auroc', float('nan')):.4f})")
+    metrics = evaluate(all_mols, train_smiles, train_mols,
+                       bbb_classifier=bbb_classifier)
     print()
     print_metrics(metrics)
 

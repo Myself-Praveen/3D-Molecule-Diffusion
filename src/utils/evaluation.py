@@ -318,12 +318,142 @@ def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: BBB-specific metrics (implementation.md)
+# ---------------------------------------------------------------------------
+
+def _murcko_scaffolds(mols) -> list[str]:
+    """Bemis-Murcko scaffold SMILES for valid molecules ('' if acyclic)."""
+    from rdkit.Chem.Scaffolds import MurckoScaffold
+
+    out = []
+    for m in mols:
+        if m is None:
+            continue
+        try:
+            out.append(MurckoScaffold.MurckoScaffoldSmiles(mol=m))
+        except Exception:
+            out.append("__invalid__")
+    return out
+
+
+def bbb_permeability_rate(mols, classifier) -> float:
+    """Fraction of valid generated molecules predicted BBB-permeable (p > 0.5)."""
+    valid = [m for m in mols if m is not None]
+    if not valid or classifier is None:
+        return 0.0
+    try:
+        probs = classifier.predict_batch(valid)
+    except Exception:
+        return 0.0
+    return float(sum(1 for p in probs if p > 0.5) / len(valid))
+
+
+def scaffold_diversity(mols) -> float:
+    """Unique Bemis-Murcko scaffolds / valid molecules."""
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return 0.0
+    return len(set(_murcko_scaffolds(valid))) / len(valid)
+
+
+def scaffold_coverage(mols, train_mols) -> float:
+    """Fraction of training-set scaffolds reproduced in generated molecules."""
+    train_scaffs = set(_murcko_scaffolds(train_mols)) - {"__invalid__"}
+    if not train_scaffs:
+        return 0.0
+    gen_scaffs = set(_murcko_scaffolds(m for m in mols if m is not None))
+    return len(gen_scaffs & train_scaffs) / len(train_scaffs)
+
+
+def lipinski_pass_rate(mols) -> float:
+    """Fraction of valid molecules passing Lipinski's Rule of Five."""
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return 0.0
+    ok = 0
+    for m in valid:
+        try:
+            if (Descriptors.MolWt(m) <= 500
+                    and Descriptors.MolLogP(m) <= 5
+                    and rdMolDescriptors.CalcNumLipinskiHBD(m) <= 5
+                    and rdMolDescriptors.CalcNumLipinskiHBA(m) <= 10):
+                ok += 1
+        except Exception:
+            continue
+    return ok / len(valid)
+
+
+def veber_pass_rate(mols) -> float:
+    """Fraction passing Veber rules (tPSA ≤ 140, rotatable bonds ≤ 10)."""
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return 0.0
+    ok = 0
+    for m in valid:
+        try:
+            if (rdMolDescriptors.CalcTPSA(m) <= 140
+                    and rdMolDescriptors.CalcNumRotatableBonds(m) <= 10):
+                ok += 1
+        except Exception:
+            continue
+    return ok / len(valid)
+
+
+def _ramp(x: float, low: float, high: float, invert: bool = False) -> float:
+    """Piecewise-linear 0-1 desirability ramp between low and high."""
+    if high <= low:
+        return 1.0 if x <= low else 0.0
+    s = (x - low) / (high - low)
+    s = max(0.0, min(1.0, s))
+    return 1.0 - s if invert else s
+
+
+def cns_mpo_score(mols) -> float:
+    """Average CNS MPO score (Wager et al., 2010) over valid molecules.
+
+    Sums four Wager desirability functions computable in RDKit —
+    MW (1.0 ≤360 → 0 at 500), cLogP (1.0 ≤3 → 0 at 5),
+    HBD (1.0 at 0 → 0 at ≥2), tPSA (1.0 in 40–90, ramps to 0 at 20/140).
+    Range 0–4 (the pKa and CLogD terms need proprietary predictors and are
+    omitted; add ~2× for the rough 0–6 equivalent). Higher = BBB-favorable.
+    """
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return 0.0
+    scores = []
+    for m in valid:
+        try:
+            mw = Descriptors.MolWt(m)
+            logp = Descriptors.MolLogP(m)
+            hbd = rdMolDescriptors.CalcNumLipinskiHBD(m)
+            tpsa = rdMolDescriptors.CalcTPSA(m)
+            if 40.0 <= tpsa <= 90.0:
+                tpsa_s = 1.0
+            elif 20.0 <= tpsa < 40.0:
+                tpsa_s = (tpsa - 20.0) / 20.0
+            elif 90.0 < tpsa <= 140.0:
+                tpsa_s = (140.0 - tpsa) / 50.0
+            else:
+                tpsa_s = 0.0
+            scores.append(
+                _ramp(mw, 360.0, 500.0, invert=True)
+                + _ramp(logp, 3.0, 5.0, invert=True)
+                + max(0.0, 1.0 - 0.5 * hbd)
+                + tpsa_s
+            )
+        except Exception:
+            continue
+    return float(sum(scores) / len(scores)) if scores else 0.0
+
+
 def evaluate(
     mols: Sequence[Chem.Mol | None],
     train_smiles: set[str],
     train_mols: Sequence[Chem.Mol],
+    bbb_classifier=None,
 ) -> dict[str, float]:
-    """Run the full MOSES metric suite and return a dict of results."""
+    """Run the full MOSES + BBB metric suite and return a dict of results."""
     return {
         "Validity": validity(mols) * 100.0,
         "Uniqueness": uniqueness(mols) * 100.0,
@@ -332,7 +462,14 @@ def evaluate(
         "QED": mean_qed(mols),
         "LogP": mean_logp(mols),
         "SNN": snn(mols, train_mols),
-        **connectivity(mols),
+        # Phase 4 BBB-specific metrics (-1 sentinel when no oracle given).
+        "BBB%": (bbb_permeability_rate(mols, bbb_classifier) * 100.0
+                 if bbb_classifier is not None else -1.0),
+        "ScaffDiv": scaffold_diversity(mols),
+        "ScaffCov": scaffold_coverage(mols, train_mols),
+        "Lipinski%": lipinski_pass_rate(mols) * 100.0,
+        "Veber%": veber_pass_rate(mols) * 100.0,
+        "CNS_MPO": cns_mpo_score(mols),
     }
 
 

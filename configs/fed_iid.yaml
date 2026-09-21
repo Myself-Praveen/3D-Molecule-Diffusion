@@ -38,6 +38,7 @@ training:
   kNN: 4
   type_loss_weight: 0.5   # λ_type
   valence_loss_weight: 1.0    # λ₂ all-pairs surrogate (geo_esc recipe)
+  valence_warmup_rounds: 5    # λ₂ = 0 for rounds 1-5, linear ramp 6-10 (1e28 guard)
   diversity_loss_weight: 0.0  # λ₃ diversity regularizer (Step 3.3)
 
 generation:

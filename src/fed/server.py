@@ -71,9 +71,36 @@ class FederatedServer:
                 trainer.set_parameters(backbone)
         return snapshot
 
+    def _valence_weight(self, round_idx: int) -> float:
+        """Effective λ₂ for this round with linear warmup.
+
+        128-dim EGNNs explode on pathological early batches (1e28 losses seen
+        round 1), so geometry pressure fades in only after weights stabilize:
+        0 for the first 5 rounds, linear ramp over ``valence_warmup_rounds``.
+        A warmup of 0 (default) reproduces the old constant-weight behavior.
+        Reads the target stashed by ``run_round`` (the live key holds the
+        previously scheduled value).
+        """
+        training = self.cfg["training"]
+        target = float(training.get(
+            "_valence_target", training.get("valence_loss_weight", 0.0)))
+        warmup = int(self.cfg["training"].get("valence_warmup_rounds", 0))
+        if warmup <= 0 or round_idx <= 5:
+            frac = 0.0 if warmup > 0 and round_idx <= 5 else 1.0
+        else:
+            frac = min(1.0, (round_idx - 5) / warmup)
+        return target * frac
+
     def run_round(self, round_idx: int, lr: float | None = None) -> dict:
         local_epochs = int(self.cfg["fed"].get("local_epochs", 1))
         snapshot = self._broadcast()
+
+        # Publish the warmup-scaled λ₂ where LocalTrainers already read it
+        # (self.cfg is shared by reference); target preserved on first call.
+        training = self.cfg["training"]
+        if "_valence_target" not in training:
+            training["_valence_target"] = float(training.get("valence_loss_weight", 0.0))
+        training["valence_loss_weight"] = self._valence_weight(round_idx)
 
         results = []
         for trainer, loader in zip(self.trainers, self.train_loaders):
@@ -114,6 +141,7 @@ class FederatedServer:
             "server_loss": sum(
                 r["loss"] * r["num_examples"] for r in results
             ) / total_n,
+            "valence_weight": float(self.cfg["training"].get("valence_loss_weight", 0.0)),
             "client_losses": [r["loss"] for r in results],
             "client_pos_losses": [r["pos_loss"] for r in results],
             "client_type_losses": [r["type_loss"] for r in results],

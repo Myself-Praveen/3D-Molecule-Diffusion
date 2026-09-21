@@ -1,8 +1,8 @@
 # Project Progress & Rationale
 
 **Project:** Novel Molecular Generation using Graph GANs/Diffusion for BBB Permeability
-**Current Phase:** Phases 1–3 implemented; QM9 geometry retraining in progress
-**Last Updated:** 19 Sep 2026 (CPU-only machine, `node1`)
+**Current Phase:** Phases 1–4 implemented; federated retrains running; geometry validated to 47.1% validity
+**Last Updated:** 20 Sep 2026 (CPU-only machine, `node1`)
 
 ---
 
@@ -68,8 +68,21 @@ Retraining central QM9 with the fixed coordinate head (old checkpoints archived 
 5. **Escalation run (§11.3 capacity/schedule valve) — RUNNING:** `configs/central_geo_esc.yaml` — node_dim/edge_dim 64→128, num_layers 4→6 (0.78M params, ~4× v2), epochs 100→150; λ₂=1.0, kNN, batch, probe cadence and seed unchanged for comparability. pid in `logs/central_geo_esc.pid`, log `logs/central_geo_esc.log`; resumable via `--resume --run_epochs N`. ~2 min/epoch → ~5 h total.
 6. **Escalation stability hardening (`train.py`, pending commit):** the 128/6 model NaN-diverged at epoch 1 twice (lr 1e-3 and 3e-4), while a 6-step offline probe with identical code paths showed both 64/4 and 128/6 training cleanly at lr 3e-4 — so the culprit is a rare pathological batch inside the full ~3,270-step epoch, not capacity or lr per se. Fixes: (a) NaN/Inf grad guard — batches with non-finite grads are skipped instead of poisoning weights (2 such batches caught in escalated epoch 1); (b) `training.grad_clip_norm` (default 0.0 = off, legacy recipes unchanged; esc run uses 5.0) clips global grad norm so finite-but-huge batches take bounded steps. lr cut 1e-3→3e-4 kept for the bigger model. Evidence it works: escalated val improved 1.048→1.013 over epochs 1–2 (v2-trajectory), while epoch-1 *train averages* still show the few finite-but-huge batches (cosmetic; val unaffected).
 7. **Discovery C — the eval bond builder failed GROUND TRUTH (fixed):** `coords_and_types_to_mol` could not rebuild even real QM9 molecules: **0.7% valid** at its 2.5 Å cutoff, **20.7%** at a proposed 1.8 Å (methyl H···H ≈ 1.78 Å and 1-3 ring contacts ≈ 2.42 Å were spuriously bonded; worse, the old threshold ladder assigned *triple* bonds to every C–H at 1.09 Å — the "C, 9" valence errors in every log). Replaced with element-aware covalent radii (bond iff dist ≤ r_i + r_j + 0.45 Å; single-bond topology since distance alone can't order bonds). Ground truth now: **99.0% valid, 10.83 bonds/mol vs 10.96 true**. Consequences: (a) v2's honest validity is **~9.4%** (32 samples, DDIM-20), not 0%; (b) v2's failure mode is **dispersed/under-bonded geometry (1.3 bonds/mol vs ~16 expected for 18 atoms) — coordinate precision, NOT clumping**: val_pos RMSE ≈ 0.54 Å vs ≤0.45 Å bonding windows. The earlier "26.1 bonds/mol clumps" diagnosis and both 0.0% eval tables were artifacts of the broken lens. The λ₂-clump rationale is unproven; λ₂ stays in the escalation for comparability, a λ₂=0 arm is optional. Escalated run restarted with `--resume` (epoch 22, best val 0.9078) so its probes use the fixed eval — epochs 30+ probes are the first honest ones. NOTE: `tests/test_phase1_5.py::test_loss_beats_baseline` is a pre-existing order-dependent flake (fails identically with the fix stashed; passes in isolation).
+8. **Escalated run FINISHED (150/150):** best epoch **146** (val 0.871), final probe **quick_valid=25.0%** — first honest nonzero validity in project history. Full eval of best (`outputs/eval_geo_esc/`, DDIM-50): Validity **28.3**, Uniqueness/Novelty 100, IntDiv 0.90, QED 0.48, LogP ≈ 0, SNN 0.15, 283 molecules saved.
+9. **Sampler operating-point sweep (no retraining):** more DDIM steps + mild stochasticity lift validity monotonically — DDIM-50/eta0 28.3/7.7 → DDIM-100 37.8/10.2 → DDIM-200 44.4/13.2 → DDIM-100/eta0.5 40.5/12.1 → **DDIM-200/eta0.5 47.1/14.3 (adopted as Table I protocol**, recorded in `central_geo_esc.yaml`). Geometry recipe unchanged; the gain is pure sampling.
+10. **Connectivity metrics (anti-fraud honesty):** plain Validity passes disconnected single atoms, so pre_coordfix scored 99.4% on fragment soup. Added `ConnectedValidity` (% valid AND single-fragment), `BondsPerMol`, `ConnectedFrac` to `evaluation.py` (+ `tests/test_eval_connectivity.py`) and persisted in every `metrics.json`. True Table I (fixed ruler, 1000 samples DDIM-50): pre_coordfix 99.4/**0.0** (0.1 bonds), coordfix_v1 20.8/**1.3** (15.3), lambda2_v1 24.3/**1.6** (15.1), geo_esc 29.9/**7.7** (16.8) → truth 94.7% (~19). Monotonic real progress on the honest number.
 
-## 10. Commit History
+## 10. Phase 4 — Extended Metrics (Done)
+
+- New BBB-specific metrics in `src/utils/evaluation.py`, wired through `evaluate(..., bbb_classifier=...)` (backward compatible; `BBB%` is -1 without an oracle): **BBB%** (oracle P>0.5 rate), **ScaffDiv** (unique Murcko scaffolds / valid), **ScaffCov** (train scaffolds reproduced), **Lipinski%**, **Veber%**, **CNS_MPO** (Wager ramps for MW/LogP/HBD/TPSA; pKa+CLogD need proprietary predictors and are omitted, so 0–4 scale, documented). `tests/test_extended_metrics.py` (7 tests). `generate_and_eval.py --bbb_oracle` loads the trained oracle into eval.
+- **Baseline on unconditioned geo_esc molecules (471 saved SMILES, no generation cost): BBB% 24.8**, ScaffDiv 0.53, Lipinski 100%, CNS_MPO 3.29/4 — the number Phase 6 guidance must beat.
+
+## 11. Federated Retrains With Winning Recipe (Running)
+
+- Both fed globals were still coord-dead, so `configs/fed_iid.yaml` + `fed_niid.yaml` moved to the geo_esc recipe (128-dim/6-layer, lr 3e-4, λ₂=1.0 all-pairs) and both full retrains launched backgrounded (`logs/fed_iid_retrain.log`, `logs/fed_niid_retrain.log`; old outputs archived to `outputs/fed_*_v1/`). `LocalTrainer` gained the same grad-clip + NaN-skip guard as central (its fresh-per-round Adam faces the same 128-dim instability).
+- Smoke-verified (`fed_iid_smoke` 2 rounds clean) before launch; suite green modulo the known flake.
+
+## 12. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
 - `9bfb020` federated checkpoints + persistent eval outputs
@@ -78,11 +91,13 @@ Retraining central QM9 with the fixed coordinate head (old checkpoints archived 
 - `ac8a0ec` Phase 3 BBB oracle
 - `9b62eb3` atom-index convention fix + sampler hardening
 - `6ebc70e`→`8a1d892` λ₂ central training (after rebase onto remote `8fb2830` QM9 analysis doc); remote and local in sync
-- Pending: λ₂=1.0 code (surrogate fix, validity probe, config) + v2 eval records + `central_geo_esc` escalation config/run
+- `3648a5f` all-pairs λ₂ surrogate + live validity probes + recorded evals
+- `0030a73` sampler sweep: DDIM-200/eta0.5 Table I protocol (47.1/14.3)
+- `7f5deed` Phase 4 BBB metrics with oracle wiring and tests
+- `ce1ac05` federated configs to geo_esc recipe with trainer grad-clip guard
 
-## 11. What's Next
+## 13. What's Next
 
-1. **Immediate:** monitor the escalated run — `tail logs/central_geo_esc.log` (quick_valid probes every 10 epochs; chunked resume via `--resume --run_epochs N`). First real signal: the epoch-10 probe; v2 was 0.0% there, so anything > 0% is progress.
-2. **If validity recovers:** full eval to a fresh `outputs/` dir for the honest before/after Table I, then fed retrains with the winning recipe (both fed globals are still coord-dead), then Phase 4 extended metrics (BBB% via the oracle, scaffold diversity, Lipinski, CNS-MPO).
-3. **After the escalated run:** the sharpened diagnosis (Discovery C) is *under-bonded geometry from coordinate error* (RMSE ≈ 0.54 Å vs ≤0.45 Å bonding windows), so the valves are: capacity/training length (running), eps-prediction form, and higher-fidelity eval sampling (more DDIM steps). A λ₂=0 ablation arm is optional now that the clump theory is unproven.
-4. **Then:** Phase 5 BBB configs + sweeps, Phase 6 entry-point wiring (conditioned/BBB training + guided generation), Phase 7 figures, Phase 8 tests + paper write-up.
+1. **Now:** monitor both fed retrains (`tail logs/fed_*_retrain.log`); on 50/50 completion, eval each `best_global.pt` with the adopted protocol (DDIM-200/eta0.5) + oracle for the federated Table I rows (validity, connected validity, BBB%).
+2. **Then:** Phase 5 BBB configs + sweeps (conditioned training configs now that metrics/oracle/sampler are all in place), Phase 6 entry-point wiring (conditioned/BBB training + guided generation targeting BBB% ≫ 24.8%).
+3. **After:** Phase 7 figures, Phase 8 tests + paper write-up; optional λ₂=0 ablation now that the clump theory is unproven.

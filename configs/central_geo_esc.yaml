@@ -43,6 +43,19 @@ generation:
   num_samples: 16
   ddim_steps: 20
 
+# Table I eval protocol (sampler operating-point sweep, fixed ruler):
+#   DDIM-50/eta0.0  -> Validity 28.3 / ConnValid 7.7
+#   DDIM-100/eta0.0 -> Validity 37.8 / ConnValid 10.2
+#   DDIM-200/eta0.0 -> Validity 44.4 / ConnValid 13.2
+#   DDIM-100/eta0.5 -> Validity 40.5 / ConnValid 12.1
+#   DDIM-200/eta0.5 -> Validity 47.1 / ConnValid 14.3  (adopted)
+eval:
+  num_samples: 1000
+  ddim_steps: 200
+  eta: 0.5
+  batch_size: 100
+  seed: 42
+
 checkpoint:
   dir: checkpoints
   save_every: 5

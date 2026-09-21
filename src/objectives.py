@@ -34,6 +34,53 @@ def distance_adjacency_probs(pos: torch.Tensor, pair_index: torch.Tensor) -> tor
     return torch.sigmoid((_BOND_CUTOFF - dist) / _SOFTNESS)
 
 
+def x0_valence_penalty(
+    noise_pred: torch.Tensor,
+    noisy_pos: torch.Tensor,
+    type_logits: torch.Tensor,
+    t: torch.Tensor,
+    batch: torch.Tensor,
+    z: torch.Tensor,
+    num_types: int,
+    type_to_z: dict[int, int] | None,
+    alpha_bars: torch.Tensor,
+    lambda_weight: float = 1.0,
+    tau: int = 200,
+    x0_clamp: float = 5.0,
+) -> torch.Tensor:
+    """λ₂ validity pressure that actually trains geometry.
+
+    Two corrections over the naive formulation:
+    1. The penalty is evaluated on the model's denoised prediction
+       ``x0 = (x_t - √(1-ā)·ε̂)/√ā`` (which depends on θ via ``noise_pred``),
+       NOT on ``noisy_pos`` (which is θ-independent data — penalizing it can
+       only corrupt the type head, observed as CE 0.76→1.22).
+    2. Only molecules with ``t < tau`` contribute: at high noise x0 carries
+       160×-amplified error and the penalty is meaningless; fine bonds are
+       decided at low noise. Type probabilities are detached so the model
+       cannot dodge by predicting carbon everywhere.
+    Returns 0 when no graph in the batch passes the gate.
+    """
+    if lambda_weight <= 0.0:
+        return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
+    gate = (t < tau)
+    if not bool(gate.any()):
+        return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
+    ab = alpha_bars.to(noise_pred.device)[t][batch]
+    s1 = (1.0 - ab).sqrt().unsqueeze(-1)
+    s0 = ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
+    with torch.no_grad():
+        keep = gate[batch]
+    x0_pred = ((noisy_pos - s1 * noise_pred) / s0).clamp(-x0_clamp, x0_clamp)
+    x0_pred = x0_pred[keep]
+    probs = torch.softmax(type_logits, dim=-1).detach()[keep]
+    _, remap = torch.unique(batch[keep], return_inverse=True)
+    return lambda_weight * soft_valence_penalty(
+        probs, x0_pred, None, z[keep],
+        num_types=num_types, type_to_z=type_to_z, batch=remap,
+    )
+
+
 def full_pair_index(batch: torch.Tensor) -> torch.Tensor:
     """All unordered atom pairs (i<j) within each molecule as (2, P) index."""
     pairs = []

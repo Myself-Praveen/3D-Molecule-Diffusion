@@ -25,7 +25,7 @@ from src.dataset import load_qm9
 from src.fed.trainer import TYPE_TO_Z
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
-from src.objectives import diversity_regularizer, soft_valence_penalty
+from src.objectives import diversity_regularizer, x0_valence_penalty
 from src.utils.graph import build_knn_graph
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -260,17 +260,19 @@ def train_diffusion(
             type_loss = F.cross_entropy(type_logits, batch_data.z.long())
             loss = pos_loss + lambda_type * type_loss
 
-            # λ₂ soft valence penalty (validity surrogate). NOTE: noisy_pos is
-            # intentionally ATTACHED (unlike the fed-trainer variant) so the
-            # gradient also spreads over-packed atoms apart — the failure mode
-            # seen in coordfix_v1 samples (26 bonds/mol vs ~19 true).
+            # λ₂ validity pressure evaluated on the denoised x0 prediction
+            # (low-noise gated) so geometry — not types — absorbs it.
+            # See x0_valence_penalty: penalizing noisy_pos only corrupts the
+            # type head (observed CE 0.76→1.22) since x_t is θ-independent.
             if lambda_valence > 0.0:
-                loss = loss + lambda_valence * soft_valence_penalty(
-                    torch.softmax(type_logits, dim=-1), noisy_pos,
-                    edge_index, batch_data.z,
+                loss = loss + x0_valence_penalty(
+                    noise_pred, noisy_pos, type_logits, t, batch_data.batch,
+                    batch_data.z,
                     num_types=model_cfg["num_types"],
                     type_to_z=TYPE_TO_Z,
-                    batch=batch_data.batch,
+                    alpha_bars=coord_ddpm.alpha_bars,
+                    lambda_weight=lambda_valence,
+                    tau=int(train_cfg.get("valence_tau", 200)),
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
-from src.objectives import diversity_regularizer, soft_valence_penalty
+from src.objectives import diversity_regularizer, x0_valence_penalty
 from src.utils.graph import build_knn_graph
 
 # FedPer-style personal parameters: kept local, never aggregated.
@@ -199,14 +199,17 @@ class LocalTrainer:
         type_loss = F.cross_entropy(type_logits, z_idx)
         loss = pos_loss + lambda_type * type_loss
 
-        # Step 3.3 multi-objective terms.
+        # Step 3.3 multi-objective terms (λ₂ evaluated on denoised x0 so
+        # geometry — not types — absorbs the pressure; see x0_valence_penalty).
         if lambda_valence > 0.0:
-            loss = loss + lambda_valence * soft_valence_penalty(
-                torch.softmax(type_logits, dim=-1), noisy_pos.detach(),
-                edge_index, batch_data.z,
+            loss = loss + x0_valence_penalty(
+                noise_pred, noisy_pos, type_logits, t, batch_data.batch,
+                batch_data.z,
                 num_types=self.cfg["model"]["num_types"],
                 type_to_z=TYPE_TO_Z,
-                batch=batch_data.batch,
+                alpha_bars=self.coord_ddpm.alpha_bars,
+                lambda_weight=lambda_valence,
+                tau=int(self.cfg["training"].get("valence_tau", 200)),
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(

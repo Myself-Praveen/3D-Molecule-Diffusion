@@ -94,6 +94,12 @@ def main() -> None:
                              "molecules.sdf there (created if needed)")
     parser.add_argument("--bbb_oracle", type=str, default=None,
                         help="Path to trained BBB oracle (.pt); enables BBB% metric")
+    parser.add_argument("--relax", action="store_true",
+                        help="MMFF94/UFF-relax each valid molecule and report a second "
+                             "(relaxed) metric table; raw table always reported too")
+    parser.add_argument("--step_schedule", type=str, default="linear",
+                        choices=["linear", "quadratic"],
+                        help="DDIM grid spacing (quadratic densifies low-noise steps)")
     args = parser.parse_args()
 
     # Config
@@ -119,6 +125,7 @@ def main() -> None:
         edge_dim=model_cfg["edge_dim"],
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
+        use_attention=model_cfg.get("use_attention", False),
     ).to(device)
     model.load_state_dict(_load_model_weights(ckpt, model))
 
@@ -127,12 +134,14 @@ def main() -> None:
         beta_start=diff_cfg["beta_start"],
         beta_end=diff_cfg["beta_end"],
         device=device,
+        schedule=diff_cfg.get("schedule", "linear"),
     )
     type_ddpm = TypeDDPM(
         num_steps=diff_cfg["num_steps"],
         beta_start=diff_cfg["beta_start"],
         beta_end=diff_cfg["beta_end"],
         device=device,
+        schedule=diff_cfg.get("schedule", "linear"),
     )
 
     # Load training set for novelty / SNN baselines
@@ -171,6 +180,7 @@ def main() -> None:
             device=device,
             ddim_steps=args.ddim_steps,
             eta=args.eta,
+            step_schedule=args.step_schedule,
         )
 
         # Convert each generated molecule to RDKit
@@ -199,7 +209,7 @@ def main() -> None:
               f"(val AUROC {bbb_ckpt.get('val_auroc', float('nan')):.4f})")
     metrics = evaluate(all_mols, train_smiles, train_mols,
                        bbb_classifier=bbb_classifier)
-    print()
+    print("\n--- RAW (as generated) ---")
     print_metrics(metrics)
 
     # Print as table for easy copy-paste
@@ -210,11 +220,27 @@ def main() -> None:
     latex_row = "  & ".join(vals) + " \\\\"
     print(latex_row)
 
+    relaxed = None
+    if args.relax:
+        from src.utils.evaluation import relax_molecule
+
+        relaxed = [relax_molecule(m) for m in all_mols]
+        metrics_relaxed = evaluate(relaxed, train_smiles, train_mols,
+                                   bbb_classifier=bbb_classifier)
+        print("\n--- RELAXED (MMFF94/UFF post-hoc; report alongside raw) ---")
+        print_metrics(metrics_relaxed)
+        print("\nLaTeX row (relaxed):")
+        print("  & ".join(f"{metrics_relaxed[k]:.4f}" for k in metric_keys) + " \\\\")
+    else:
+        metrics_relaxed = None
+
     if args.output_dir:
         _save_eval_outputs(
             args.output_dir, all_mols, metrics, latex_row,
             checkpoint=args.checkpoint, num_samples=args.num_samples,
             ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
+            step_schedule=args.step_schedule, relax=args.relax,
+            relaxed_mols=relaxed, relaxed_metrics=metrics_relaxed,
         )
 
 
@@ -223,6 +249,8 @@ def _save_eval_outputs(
     mols: list,
     metrics: dict,
     latex_row: str,
+    relaxed_mols: list | None = None,
+    relaxed_metrics: dict | None = None,
     **run_cfg,
 ) -> None:
     """Persist eval results: metrics.json, smiles.txt, molecules.sdf (3D)."""
@@ -240,18 +268,17 @@ def _save_eval_outputs(
         except Exception:
             continue
 
+    payload = {
+        "metrics": metrics,
+        "latex_row": latex_row,
+        "num_valid": len(valid_smiles),
+        "num_total": len(mols),
+        "run": run_cfg,
+    }
+    if relaxed_metrics is not None:
+        payload["metrics_relaxed"] = relaxed_metrics
     with open(out / "metrics.json", "w") as f:
-        json.dump(
-            {
-                "metrics": metrics,
-                "latex_row": latex_row,
-                "num_valid": len(valid_smiles),
-                "num_total": len(mols),
-                "run": run_cfg,
-            },
-            f,
-            indent=2,
-        )
+        json.dump(payload, f, indent=2)
     with open(out / "smiles.txt", "w") as f:
         f.write("\n".join(valid_smiles) + ("\n" if valid_smiles else ""))
 
@@ -274,6 +301,22 @@ def _save_eval_outputs(
     writer.close()
     print(f"\nSaved {saved} molecules -> {sdf_path}")
     print(f"Saved metrics -> {out / 'metrics.json'}, smiles -> {out / 'smiles.txt'}")
+    if relaxed_mols is not None:
+        r_path = out / "molecules_relaxed.sdf"
+        r_writer = Chem.SDWriter(str(r_path))
+        r_writer.SetKekulize(False)
+        r_saved = 0
+        for mol in relaxed_mols:
+            if mol is None:
+                continue
+            try:
+                mol.SetProp("_Name", Chem.MolToSmiles(mol))
+                r_writer.write(mol)
+                r_saved += 1
+            except Exception:
+                continue
+        r_writer.close()
+        print(f"Saved {r_saved} relaxed molecules -> {r_path}")
 
 
 def _data_to_rdkit_mol(data) -> Chem.Mol | None:

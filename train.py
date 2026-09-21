@@ -141,12 +141,14 @@ def train_diffusion(
         beta_start=diff_cfg["beta_start"],
         beta_end=diff_cfg["beta_end"],
         device=device,
+        schedule=diff_cfg.get("schedule", "linear"),
     )
     type_ddpm = TypeDDPM(
         num_steps=diff_cfg["num_steps"],
         beta_start=diff_cfg["beta_start"],
         beta_end=diff_cfg["beta_end"],
         device=device,
+        schedule=diff_cfg.get("schedule", "linear"),
     )
     model = EquivariantGenerator(
         num_types=model_cfg["num_types"],
@@ -154,6 +156,7 @@ def train_diffusion(
         edge_dim=model_cfg["edge_dim"],
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
+        use_attention=model_cfg.get("use_attention", False),
     ).to(device)
 
     optimizer = Adam(
@@ -192,6 +195,15 @@ def train_diffusion(
                         f"checkpoint={resume_state.get('config', {}).get('model', {}).get(k)} "
                         f"vs current={model_cfg.get(k)}. Refusing to resume."
                     )
+            # Noise schedule must also match: alpha_bars are baked into every
+            # trained timestep, so a linear↔cosine switch invalidates weights.
+            resume_sched = resume_state.get("config", {}).get("diffusion", {}).get("schedule", "linear")
+            if resume_sched != diff_cfg.get("schedule", "linear"):
+                raise ValueError(
+                    f"Resume config mismatch for diffusion.schedule: "
+                    f"checkpoint={resume_sched} vs current={diff_cfg.get('schedule', 'linear')}. "
+                    f"Refusing to resume."
+                )
             model.load_state_dict(resume_state["model_state_dict"])
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
             if "scheduler_state_dict" in resume_state:
@@ -244,9 +256,12 @@ def train_diffusion(
                 batch_data.pos, t, batch_data.batch,
             )
 
-            # Atom-type diffusion (EDM-style categorical)
+            # Atom-type diffusion (EDM-style categorical). batch= is required:
+            # without it _atom_batch broadcasts one timestep per ATOM, so the
+            # type head would train on (noise-level, conditioned-t) mismatches.
             noisy_types = type_ddpm.sample_noisy_types(
                 batch_data.z, t, model_cfg["num_types"],
+                batch=batch_data.batch,
             )
 
             edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
@@ -324,6 +339,7 @@ def train_diffusion(
                 )
                 noisy_types = type_ddpm.sample_noisy_types(
                     batch_data.z, t, model_cfg["num_types"],
+                    batch=batch_data.batch,
                 )
                 edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
                 noise_pred, type_logits, _ = model(
@@ -446,6 +462,7 @@ def train_diffusion(
             )
             noisy_types = type_ddpm.sample_noisy_types(
                 batch_data.z, t, model_cfg["num_types"],
+                batch=batch_data.batch,
             )
             edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
             noise_pred, type_logits, _ = model(

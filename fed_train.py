@@ -97,12 +97,12 @@ def run_federated(
 
     # ---- Models -----------------------------------------------------------
     diff_cfg, model_cfg = cfg["diffusion"], cfg["model"]
-    coord_ddpm = CenteredDDPM(device=device, **{
-        k: diff_cfg[k] for k in ("num_steps", "beta_start", "beta_end")
-    })
-    type_ddpm = TypeDDPM(device=device, **{
-        k: diff_cfg[k] for k in ("num_steps", "beta_start", "beta_end")
-    })
+    ddpm_kwargs = {
+        **{k: diff_cfg[k] for k in ("num_steps", "beta_start", "beta_end")},
+        "schedule": diff_cfg.get("schedule", "linear"),
+    }
+    coord_ddpm = CenteredDDPM(device=device, **ddpm_kwargs)
+    type_ddpm = TypeDDPM(device=device, **ddpm_kwargs)
 
     trainers = [
         LocalTrainer(
@@ -143,6 +143,13 @@ def run_federated(
                     )
             if rstate.get("config", {}).get("fed", {}).get("num_clients") != cfg["fed"].get("num_clients"):
                 raise ValueError("Resume config mismatch for fed.num_clients. Refusing to resume.")
+            resume_sched = rstate.get("config", {}).get("diffusion", {}).get("schedule", "linear")
+            if resume_sched != diff_cfg.get("schedule", "linear"):
+                raise ValueError(
+                    f"Resume config mismatch for diffusion.schedule: "
+                    f"checkpoint={resume_sched} vs current={diff_cfg.get('schedule', 'linear')}. "
+                    f"Refusing to resume."
+                )
             for trainer in trainers:
                 trainer.set_parameters(
                     {k: v.to(trainer.device) for k, v in rstate["global_state"].items()}

@@ -32,9 +32,19 @@ def timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 class EGNNLayer(MessagePassing):
-    """One message-passing layer with equivariant coordinate updates."""
+    """One message-passing layer with equivariant coordinate updates.
 
-    def __init__(self, node_dim: int, edge_dim: int, time_dim: int) -> None:
+    Strategy 4 (validity_80_plan.md): with ``use_attention=True``, a sigmoid
+    gate learned from the edge message re-weights each edge contribution
+    before both the coordinate and node updates, letting the model
+    distinguish bonded from merely-close neighbors (ring closure, steric
+    contacts). Default off — identical to the pre-attention layer.
+    """
+
+    def __init__(
+        self, node_dim: int, edge_dim: int, time_dim: int,
+        use_attention: bool = False,
+    ) -> None:
         super().__init__(aggr="mean")
         self.edge_mlp = nn.Sequential(
             nn.Linear(node_dim * 2 + 1 + time_dim, edge_dim),
@@ -50,6 +60,11 @@ class EGNNLayer(MessagePassing):
             nn.Linear(node_dim + edge_dim + time_dim, node_dim),
             nn.SiLU(),
             nn.Linear(node_dim, node_dim),
+        )
+        # Strategy 4: per-edge sigmoid attention gate over the message.
+        self.attn_mlp = (
+            nn.Sequential(nn.Linear(edge_dim, 1), nn.Sigmoid())
+            if use_attention else None
         )
         # Zero-init the final coordinate update: the untrained network is the
         # identity map, so predicted noise starts near zero (Rec A2).
@@ -68,6 +83,8 @@ class EGNNLayer(MessagePassing):
         radial = coord_diff.square().sum(dim=-1, keepdim=True)
         msg_input = torch.cat((h[row], h[col], radial, t_emb[row]), dim=-1)
         msg = self.edge_mlp(msg_input)
+        if self.attn_mlp is not None:
+            msg = msg * self.attn_mlp(msg)
 
         trans = coord_diff * self.coord_mlp(msg)
         pos_update = torch.zeros_like(pos)
@@ -104,6 +121,7 @@ class EquivariantGenerator(nn.Module):
         time_dim: int = 32,
         cond_dim: int = 0,
         num_cond_classes: int = 2,
+        use_attention: bool = False,
     ) -> None:
         super().__init__()
         self.num_types = num_types
@@ -128,7 +146,10 @@ class EquivariantGenerator(nn.Module):
                 nn.Linear(cond_dim, time_dim),  # project to time_dim
             )
         self.layers = nn.ModuleList(
-            [EGNNLayer(node_dim, edge_dim, time_dim) for _ in range(num_layers)]
+            [
+                EGNNLayer(node_dim, edge_dim, time_dim, use_attention=use_attention)
+                for _ in range(num_layers)
+            ]
         )
         self.type_head = nn.Linear(node_dim, num_types)
         self.bond_head = nn.Sequential(

@@ -81,8 +81,19 @@ Retraining central QM9 with the fixed coordinate head (old checkpoints archived 
 
 - Both fed globals were still coord-dead, so `configs/fed_iid.yaml` + `fed_niid.yaml` moved to the geo_esc recipe (128-dim/6-layer, lr 3e-4, λ₂=1.0 all-pairs) and both full retrains launched backgrounded (`logs/fed_iid_retrain.log`, `logs/fed_niid_retrain.log`; old outputs archived to `outputs/fed_*_v1/`). `LocalTrainer` gained the same grad-clip + NaN-skip guard as central (its fresh-per-round Adam faces the same 128-dim instability).
 - Smoke-verified (`fed_iid_smoke` 2 rounds clean) before launch; suite green modulo the known flake.
+- geo_esc completed 150/150 epochs (best val 0.8710 @ epoch 146, test_loss 0.8818; probe band 6–31%, full-eval 47.1/14.3 under the adopted DDIM-200/eta0.5 protocol). Fed retrains in flight at the time of the validity-80 commit (their `outputs/` churn deliberately excluded from it).
 
-## 12. Commit History
+## 12. Validity-80 Plan Implemented (Done)
+
+All 6 strategies from validity_80_plan.md, wired through every entry point (`train.py`, `generate_and_eval.py`, `fed_train.py`, `src/fed/trainer.py`):
+- **S1 relax** — `relax_molecule` (MMFF94, UFF fallback) in `src/utils/evaluation.py` + `--relax` flag; **S6 quadratic DDIM** — grid extracted to testable `ddim_timestep_grid` (dense low-noise spacing). Both already part of the adopted Table I operating point (DDIM-200/eta0.5/quad).
+- **S2 cosine schedule** — `schedule=cosine` (Nichol & Dhariwal s=0.008) on `CenteredDDPM`/`TypeDDPM`; ᾱ computed straight from the f64 reference formula, not a betas round-trip. Resume guards reject schedule mismatches (checkpoint vs config).
+- **S4 attention gates** — per-edge sigmoid `attn_mlp` on `EGNNLayer`/`EquivariantGenerator` via `use_attention` (default off; state-dict superset keeps legacy checkpoints loadable).
+- **S3+S5 V3 config** — `configs/central_v3_full.yaml`: 256-dim/8-layer, kNN 8, λ₂=0, patience 40, lr 2e-4, batch 16, own checkpoint dir `checkpoints/central_v3` (geo_esc owns `checkpoints/`).
+- **Bug fix en route**: `train.py`'s test-eval call of `sample_noisy_types` was missing `batch=batch_data.batch` (per-atom timesteps silently mismatched vs the conditioned t); all 3 call sites now consistent with the fed trainer and sampler.
+- Tests: `tests/test_validity80.py` (17) + relax cases in `test_eval_connectivity.py` (7) — 24 new, all green; full suite 108/109 modulo the known pre-existing order-dependent flake.
+
+## 13. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
 - `9bfb020` federated checkpoints + persistent eval outputs
@@ -96,7 +107,7 @@ Retraining central QM9 with the fixed coordinate head (old checkpoints archived 
 - `7f5deed` Phase 4 BBB metrics with oracle wiring and tests
 - `ce1ac05` federated configs to geo_esc recipe with trainer grad-clip guard
 
-## 13. What's Next
+## 14. What's Next
 
 1. **Now:** monitor both fed retrains (`tail logs/fed_*_retrain.log`); on 50/50 completion, eval each `best_global.pt` with the adopted protocol (DDIM-200/eta0.5) + oracle for the federated Table I rows (validity, connected validity, BBB%).
 2. **Then:** Phase 5 BBB configs + sweeps (conditioned training configs now that metrics/oracle/sampler are all in place), Phase 6 entry-point wiring (conditioned/BBB training + guided generation targeting BBB% ≫ 24.8%).

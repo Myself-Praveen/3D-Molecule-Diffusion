@@ -286,6 +286,34 @@ def snn(
 # Combined evaluation
 # ---------------------------------------------------------------------------
 
+def relax_molecule(mol: Chem.Mol | None, max_iters: int = 200) -> Chem.Mol | None:
+    """Force-field relaxation of a generated molecule (Strategy 1).
+
+    Runs MMFF94 minimization on a copy (falling back to UFF), snapping
+    near-miss coordinates into chemically valid distances. Returns the
+    relaxed copy, the original on force-field failure, or ``None`` for
+    ``None`` input. Standard post-processing in 3D generation papers —
+    always report raw AND relaxed validity side by side.
+    """
+    if mol is None:
+        return None
+    mol = Chem.Mol(mol)
+    try:
+        ff = AllChem.MMFFGetMoleculeForceField(mol, AllChem.MMFFGetMoleculeProperties(mol))
+    except Exception:
+        ff = None
+    if ff is None:
+        try:
+            ff = AllChem.UFFGetMoleculeForceField(mol)
+        except Exception:
+            return mol
+    try:
+        ff.Minimize(maxIts=max_iters)
+    except Exception:
+        pass
+    return mol
+
+
 def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
     """Fragment-aware geometry metrics over valid molecules.
 

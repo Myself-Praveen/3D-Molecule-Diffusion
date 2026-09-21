@@ -1,0 +1,62 @@
+# V3 full-combination retraining (validity_80_plan.md Strategies 2-5):
+#   S2 cosine noise schedule, S3 256-dim/8-layer, S4 equivariant attention
+#   gates, S5 kNN 4->8. Strategies 1 (relax) and 6 (quadratic DDIM) are
+#   eval-time only and enabled via generate_and_eval.py flags.
+# lambda2 removed (valence_loss_weight 0.0) — proven unproductive across v2.
+# NOTE: checkpoint.dir is its OWN directory — the live geo_esc run owns
+# checkpoints/, and sharing would clobber its best.pt/last.pt.
+# Resume: --resume --run_epochs N. Eval: DDIM-200/eta0.5 + --relax
+# --step_schedule quadratic (the adopted operating point, Table I).
+
+seed: 42
+
+data:
+  root: data
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256           # S3: escalated 128->256 (EDM-scale capacity)
+  edge_dim: 256           # S3: escalated 128->256
+  num_layers: 8           # S3: escalated 6->8
+  time_dim: 64            # richer timestep embeddings
+  use_attention: true     # S4: per-edge sigmoid attention gates
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine        # S2: Nichol & Dhariwal 2021 (s=0.008)
+  beta_start: 1.0e-4      # ignored when schedule=cosine, kept for compat
+  beta_end: 0.02
+
+training:
+  epochs: 200
+  batch_size: 16          # smaller to fit the 256/8 model in CPU memory
+  lr: 2.0e-4              # lower for stability at this capacity
+  grad_clip_norm: 5.0     # required at escalated capacity (see geo_esc v2)
+  weight_decay: 1.0e-5
+  kNN: 8                  # S5: doubled geometric context per message pass
+  type_loss_weight: 0.5
+  valence_loss_weight: 0.0   # removed — proven unproductive
+  diversity_loss_weight: 0.0
+  patience: 40
+
+generation:
+  eval_every: 10          # quick_valid probe cadence (comparable to geo_esc)
+  num_samples: 16
+  ddim_steps: 20
+
+# Table I eval protocol — identical operating point as geo_esc for a clean
+# A/B: generate_and_eval.py --ddim_steps 200 --eta 0.5 --relax
+# --step_schedule quadratic
+eval:
+  num_samples: 1000
+  ddim_steps: 200
+  eta: 0.5
+  batch_size: 50
+  seed: 42
+
+checkpoint:
+  dir: checkpoints/central_v3   # isolated from the live geo_esc run
+  save_every: 10

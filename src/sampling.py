@@ -20,6 +20,32 @@ def _center_per_molecule(pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor
     return pos - sums[batch] / counts[batch]
 
 
+def ddim_timestep_grid(
+    num_steps: int, ddim_steps: int, step_schedule: str = "linear"
+) -> list[int]:
+    """Reverse-order DDIM timestep grid over ``[0, num_steps-1]``.
+
+    Strategy 6 (validity_80_plan.md): ``"quadratic"`` concentrates timesteps
+    at low noise — where bond-length precision is decided — by spacing the
+    *noise level* linearly and squaring it. ``"linear"`` is the classic
+    evenly-spaced grid (backward compatible). The final element is always 0,
+    so the last step lands exactly on the clean data.
+    """
+    if step_schedule == "quadratic":
+        t_norm = torch.linspace(0, 1, ddim_steps + 1)
+        grid = (t_norm ** 2 * (num_steps - 1)).long()
+        # Deduplicate (squaring compresses high-noise steps) and order descending.
+        grid = torch.unique_consecutive(grid)
+        return grid.flip(0).tolist()
+    if step_schedule == "linear":
+        grid = torch.linspace(0, num_steps - 1, ddim_steps + 1).long()
+        return grid.flip(0).tolist()
+    raise ValueError(
+        f"Unknown step_schedule={step_schedule!r} "
+        f"(expected 'linear' or 'quadratic')"
+    )
+
+
 @torch.no_grad()
 def sample_molecules(
     model,
@@ -32,6 +58,7 @@ def sample_molecules(
     x0_clamp: float = 10.0,
     cond: dict[str, torch.Tensor] | None = None,
     guidance_scale: float = 0.0,
+    step_schedule: str = "linear",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -53,6 +80,9 @@ def sample_molecules(
             Salimans, 2022). ``0.0`` disables guidance (standard conditional
             pass). Requires a model trained with label dropout (see
             ``LocalTrainer``) and a conditional model (``cond_dim > 0``).
+        step_schedule: DDIM grid spacing — ``"linear"`` (evenly spaced,
+            backward compatible) or ``"quadratic"`` (denser at low noise
+            where bond-length precision is decided; no retraining needed).
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -77,8 +107,9 @@ def sample_molecules(
     if ddim_steps is None:
         timestep_iter = list(range(coord_ddpm.num_steps - 1, -1, -1))
     else:
-        grid = torch.linspace(0, coord_ddpm.num_steps - 1, ddim_steps + 1).long()
-        timestep_iter = grid.flip(0).tolist()[:-1]
+        timestep_iter = ddim_timestep_grid(
+            coord_ddpm.num_steps, ddim_steps, step_schedule
+        )[:-1]
 
     def clamp_x0(x0: torch.Tensor) -> torch.Tensor:
         return x0.clamp(-x0_clamp, x0_clamp)

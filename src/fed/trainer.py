@@ -344,6 +344,7 @@ def init_model_from_state(
         time_dim=model_cfg["time_dim"],
         cond_dim=int(model_cfg.get("cond_dim", 0)),
         num_cond_classes=int(model_cfg.get("num_cond_classes", 2)),
+        use_attention=bool(model_cfg.get("use_attention", False)),
     ).to(device)
     if state is not None:
         model.load_state_dict(state)

@@ -20,9 +20,9 @@ fed:
 
 model:
   num_types: 10
-  node_dim: 64
-  edge_dim: 64
-  num_layers: 4
+  node_dim: 128         # geo_esc recipe (was 64)
+  edge_dim: 128
+  num_layers: 6         # (was 4)
   time_dim: 32
 
 diffusion:
@@ -31,12 +31,13 @@ diffusion:
   beta_end: 0.02
 
 training:
-  lr: 1.0e-3
+  lr: 3.0e-4             # 128-dim needs lower lr (1e-3 NaN-diverged centrally)
+  grad_clip_norm: 5.0     # NaN guard, mirrors train.py
   weight_decay: 1.0e-5
   batch_size: 32
   kNN: 4
   type_loss_weight: 0.5
-  valence_loss_weight: 0.0    # λ₂
+  valence_loss_weight: 1.0    # λ₂ all-pairs surrogate (geo_esc recipe)
   diversity_loss_weight: 0.0  # λ₃
 
 generation:

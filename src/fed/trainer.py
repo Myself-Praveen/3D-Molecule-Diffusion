@@ -161,6 +161,7 @@ class LocalTrainer:
         lambda_type: float,
         lambda_valence: float,
         lambda_diversity: float,
+        grad_clip: float = 0.0,
     ) -> tuple[torch.Tensor, float, float]:
         batch_data = batch_data.to(self.device)
         if optimizer is not None:
@@ -218,6 +219,14 @@ class LocalTrainer:
 
         if optimizer is not None:
             loss.backward()
+            bad = [n for n, p in self.model.named_parameters()
+                   if p.grad is not None and not torch.isfinite(p.grad).all()]
+            if bad:
+                optimizer.zero_grad(set_to_none=True)
+                return loss.detach(), float("nan"), float("nan")
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), grad_clip)
             optimizer.step()
         return loss.detach(), pos_loss.detach().item(), type_loss.detach().item()
 
@@ -240,6 +249,7 @@ class LocalTrainer:
         lambda_type = self.cfg["training"].get("type_loss_weight", 0.5)
         lambda_valence = self.cfg["training"].get("valence_loss_weight", 0.0)
         lambda_diversity = self.cfg["training"].get("diversity_loss_weight", 0.0)
+        grad_clip = float(self.cfg["training"].get("grad_clip_norm", 0.0))
 
         total_loss = total_pos = total_type = 0.0
         steps = 0
@@ -248,7 +258,10 @@ class LocalTrainer:
                 loss, pos_l, type_l = self._batch_loss(
                     batch_data, optimizer, global_state, mu,
                     lambda_type, lambda_valence, lambda_diversity,
+                    grad_clip,
                 )
+                if pos_l != pos_l:  # NaN: batch skipped by grad guard
+                    continue
                 total_loss += loss.item()
                 total_pos += pos_l
                 total_type += type_l

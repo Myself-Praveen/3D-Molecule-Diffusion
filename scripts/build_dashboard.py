@@ -123,7 +123,7 @@ def read_smiles(p: Path) -> list[str]:
     return [l.strip() for l in p.read_text().splitlines() if l.strip()]
 
 
-def summarize_run(d: Path) -> dict:
+def summarize_run(d: Path, molcap: int) -> dict:
     """Collect metrics + parsed molecules for one eval_* directory."""
     m = read_json(d / "metrics.json") or {}
     smiles = read_smiles(d / "smiles.txt")
@@ -140,6 +140,13 @@ def summarize_run(d: Path) -> dict:
                     mols.append(x)
         except (OSError, RuntimeError):
             n_unparsable = 0  # unreadable SDF (e.g. zero-valid run); treat as no molecules
+    # Snapshot the real 3D conformers NOW, before the 2D gallery rendering
+    # mutates them in place (Compute2DCoords/PrepareAndDrawMolecule flatten z).
+    molblocks = [
+        Chem.MolToMolBlock(mol)
+        for mol in mols[:molcap]
+        if mol.GetNumConformers() > 0
+    ]
     return {
         "dir": d.name,
         "metrics": m.get("metrics", {}),
@@ -148,6 +155,7 @@ def summarize_run(d: Path) -> dict:
         "num_total": m.get("num_total", m.get("metrics", {}).get("num_total", "?")),
         "smiles": smiles,
         "mols": mols,
+        "molblocks": molblocks,
         "n_unparsable": n_unparsable,
     }
 
@@ -277,20 +285,14 @@ def comparison_table(runs: list[dict]) -> str:
     )
 
 
-def embed_3d_data(runs: list[dict], molcap: int) -> str:
-    """Per-run SDF text blocks for the 3D viewer, as a JS object."""
-    data = {}
-    for r in runs:
-        blocks = []
-        for mol in r["mols"][:molcap]:
-            try:
-                if mol.GetNumConformers() == 0:
-                    continue
-                blocks.append(Chem.MolToMolBlock(mol))
-            except Exception:
-                continue
-        if blocks:
-            data[r["dir"]] = blocks
+def embed_3d_data(runs: list[dict]) -> str:
+    """Per-run SDF text blocks for the 3D viewer, as a JS object.
+
+    Uses the molblocks snapshotted at load time — re-serializing the RDKit
+    objects here would embed whatever the 2D gallery renderer left behind
+    (flattened z=0 coordinates, which produce a blank 3D view).
+    """
+    data = {r["dir"]: r["molblocks"] for r in runs if r["molblocks"]}
     return "<script>const MOLDATA=" + json.dumps(data) + ";</script>"
 
 
@@ -374,7 +376,7 @@ def build(out: Path, molcap: int, runs_filter: list[str] | None) -> None:
         eval_dirs = [d for d in eval_dirs if d.name in runs_filter]
     if not eval_dirs:
         sys.exit("No outputs/eval_*/ directories found.")
-    runs = [summarize_run(d) for d in eval_dirs]
+    runs = [summarize_run(d, molcap) for d in eval_dirs]
     for r in runs:
         r["stats"] = [mol_stats(m) for m in r["mols"]]
 
@@ -406,7 +408,7 @@ def build(out: Path, molcap: int, runs_filter: list[str] | None) -> None:
     <div id="viewer"></div>
   </div>
 </div>
-{embed_3d_data(runs, molcap)}
+{embed_3d_data(runs)}
 {get_3dmol_js()}
 <script>{VIEWER_JS}</script>
 </body></html>"""

@@ -101,6 +101,7 @@ All 6 strategies from validity_80_plan.md, wired through every entry point (`tra
 - **2D gallery**: RDKit-rendered SVG of every valid molecule (capped at 48/run via `--molcap`) with formula, MW, QED, LogP, rings, fragment count.
 - **3D viewer**: 3Dmol.js inlined (downloaded once, cached in `/tmp`, CDN fallback) — "3D view" button opens the real generated conformer from `molecules.sdf` in a rotatable modal.
 - Verified: 14 runs embedded, 385 molecule cards, zero JS errors in headless Chrome, 3D blocks match smiles counts. Rebuild after any eval: `.venv/bin/python scripts/build_dashboard.py`.
+- **3D fix**: 2D gallery rendering (`Compute2DCoords`) mutates RDKit molecules in place, flattening z to 0 — `embed_3d_data` re-serialized those objects, so the viewer got degenerate (white-screen) geometry. Fix: snapshot `MolToMolBlock` for each run at load time, before rendering touches anything; verified end-to-end in headless Chrome (modal→addModel→render all ok, real z-range in embedded blocks).
 
 ## 14. Commit History
 

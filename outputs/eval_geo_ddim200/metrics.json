@@ -1,0 +1,24 @@
+{
+  "metrics": {
+    "Validity": 44.4,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8935863956714506,
+    "QED": 0.49373834719707993,
+    "LogP": 0.061284977477477416,
+    "SNN": 0.15863915624361563,
+    "ConnectedValidity": 13.2,
+    "BondsPerMol": 16.957207207207208,
+    "ConnectedFrac": 29.72972972972973
+  },
+  "latex_row": "44.4000  & 100.0000  & 100.0000  & 0.8936  & 0.4937  & 0.0613  & 0.1586 \\\\",
+  "num_valid": 444,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "checkpoints/best.pt",
+    "num_samples": 1000,
+    "ddim_steps": 200,
+    "eta": 0.0,
+    "seed": 42
+  }
+}

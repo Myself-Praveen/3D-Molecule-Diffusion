@@ -92,8 +92,17 @@ All 6 strategies from validity_80_plan.md, wired through every entry point (`tra
 - **S3+S5 V3 config** — `configs/central_v3_full.yaml`: 256-dim/8-layer, kNN 8, λ₂=0, patience 40, lr 2e-4, batch 16, own checkpoint dir `checkpoints/central_v3` (geo_esc owns `checkpoints/`).
 - **Bug fix en route**: `train.py`'s test-eval call of `sample_noisy_types` was missing `batch=batch_data.batch` (per-atom timesteps silently mismatched vs the conditioned t); all 3 call sites now consistent with the fed trainer and sampler.
 - Tests: `tests/test_validity80.py` (17) + relax cases in `test_eval_connectivity.py` (7) — 24 new, all green; full suite 108/109 modulo the known pre-existing order-dependent flake.
+- **V3 run launched** (pid in `logs/central_v3.pid`, log `logs/central_v3.log`): 4.09M params (5× geo_esc), sanity-verified fwd/bwd finite before launch. Measured ~13 min/epoch on CPU → **~43 h for 200 epochs**, resumable (`--resume --run_epochs N`); first `quick_valid` probe lands ~2.2 h in (epoch 10), value accrues early if stopped at any checkpoint.
 
-## 13. Commit History
+## 13. Eval Dashboard (Done)
+
+`scripts/build_dashboard.py` generates a self-contained `outputs/dashboard.html` from all `outputs/eval_*/` dirs — no server, no new deps, opens in any browser:
+- **Metric cards** per run + a sortable comparison table; runs predating the covalent-radii eval fix are auto-badged "⚠ inflated lens" and collapsed so stale numbers can't mislead (honest runs sort by Validity).
+- **2D gallery**: RDKit-rendered SVG of every valid molecule (capped at 48/run via `--molcap`) with formula, MW, QED, LogP, rings, fragment count.
+- **3D viewer**: 3Dmol.js inlined (downloaded once, cached in `/tmp`, CDN fallback) — "3D view" button opens the real generated conformer from `molecules.sdf` in a rotatable modal.
+- Verified: 14 runs embedded, 385 molecule cards, zero JS errors in headless Chrome, 3D blocks match smiles counts. Rebuild after any eval: `.venv/bin/python scripts/build_dashboard.py`.
+
+## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
 - `9bfb020` federated checkpoints + persistent eval outputs
@@ -107,7 +116,7 @@ All 6 strategies from validity_80_plan.md, wired through every entry point (`tra
 - `7f5deed` Phase 4 BBB metrics with oracle wiring and tests
 - `ce1ac05` federated configs to geo_esc recipe with trainer grad-clip guard
 
-## 14. What's Next
+## 15. What's Next
 
 1. **Now:** monitor both fed retrains (`tail logs/fed_*_retrain.log`); on 50/50 completion, eval each `best_global.pt` with the adopted protocol (DDIM-200/eta0.5) + oracle for the federated Table I rows (validity, connected validity, BBB%).
 2. **Then:** Phase 5 BBB configs + sweeps (conditioned training configs now that metrics/oracle/sampler are all in place), Phase 6 entry-point wiring (conditioned/BBB training + guided generation targeting BBB% ≫ 24.8%).

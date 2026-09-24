@@ -39,12 +39,49 @@ _BOND_TYPE_MAP: dict[int, Chem.BondType] = {
 }
 
 # Covalent radii (Cordero et al. 2008) in Å for the QM9 element set plus
-# common extras. A pair is bonded iff ``dist <= r_i + r_j + _BOND_TOLERANCE``.
+# common extras. A pair is bonded iff ``dist <= r_i + r_j + tolerance``.
 _COVALENT_RADII: dict[int, float] = {
     1: 0.31, 6: 0.76, 7: 0.71, 8: 0.66, 9: 0.57,
     15: 1.07, 16: 1.05, 17: 1.02, 35: 1.20, 53: 1.39,
 }
 _BOND_TOLERANCE: float = 0.45
+
+# Strategy 0.4 (docs/recommendation.md): per-element-pair bond tolerances.
+# The scalar 0.45 was tuned to maximize ground-truth QM9 validity globally;
+# element-pair-specific values recover borderline generated molecules:
+# tighter where false positives dominate (H–H contacts bond spuriously),
+# looser where false negatives do (C=O double bonds at ~1.23 Å sit close to
+# the radius sum 1.42 + 0.45 cutoff). Keys are sorted ``(z_lo, z_hi)``;
+# pairs not listed fall back to the scalar default. The values below encode
+# the doc's qualitative guidance — recalibrate per pair on QM9 ground truth
+# by maximizing per-pair bond recovery (see recommendation.md §0.4).
+TOLERANCE_MATRIX: dict[tuple[int, int], float] = {
+    (1, 1): 0.25,  # H–H: false positives (methyl H···H ≈ 1.78 Å contacts)
+    (1, 6): 0.40,
+    (1, 7): 0.40,
+    (1, 8): 0.40,
+    (1, 9): 0.35,
+    (6, 6): 0.45,  # C–C: the calibrated scalar default
+    (6, 7): 0.45,
+    (6, 8): 0.50,  # C–O: false negatives (carbonyl C=O ≈ 1.21–1.23 Å)
+    (6, 9): 0.40,
+    (7, 7): 0.45,
+    (7, 8): 0.45,
+    (7, 9): 0.40,
+    (8, 8): 0.40,
+    (8, 9): 0.40,
+    (9, 9): 0.40,
+}
+
+
+def get_bond_tolerance(z_i: int, z_j: int) -> float:
+    """Tolerance for element pair ``(z_i, z_j)`` (Strategy 0.4).
+
+    Symmetric in argument order; unlisted pairs (heavier elements) fall back
+    to the scalar ``_BOND_TOLERANCE``.
+    """
+    key = (min(int(z_i), int(z_j)), max(int(z_i), int(z_j)))
+    return TOLERANCE_MATRIX.get(key, _BOND_TOLERANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +94,7 @@ def coords_and_types_to_mol(
     bond_logits: np.ndarray | None = None,
     distance_cutoff: float = 2.5,
     sanitize: bool = True,
+    min_fragment_atoms: int = 1,
 ) -> Chem.Mol | None:
     """Build an RDKit Mol from 3D coordinates and atom types.
 
@@ -67,23 +105,42 @@ def coords_and_types_to_mol(
             If ``None``, bonds are inferred purely from distances.
         distance_cutoff: maximum interatomic distance (Å) to consider a bond.
         sanitize: whether to call ``Chem.SanitizeMol`` after construction.
+        min_fragment_atoms: connectivity post-processing (recommendation.md
+            "Improving Connected Validity"): before bond assignment, drop
+            provisional distance-graph fragments smaller than this (1 = off,
+            legacy behavior; 2 removes isolated atoms; 3 also removes pairs).
+            Unsupported together with dense (N, N, 5) ``bond_logits`` — that
+            combination falls back to distance-based bonding on the kept
+            atoms.
 
     Returns:
         An RDKit ``Mol`` or ``None`` if construction/sanitization fails.
     """
-    mol = Chem.RWMol()
+    valid_atoms: list[int] = [  # indices into pos/atomic_numbers
+        i for i, z in enumerate(atomic_numbers)
+        if _Z_TO_SYMBOL.get(int(z), "*") != "*"
+    ]
+    if not valid_atoms:
+        return None
 
-    # Add atoms (skip padding symbol '*')
-    valid_atoms: list[int] = []  # indices into pos/atomic_numbers
-    for i, z in enumerate(atomic_numbers):
-        z_int = int(z)
-        symbol = _Z_TO_SYMBOL.get(z_int, "*")
-        if symbol == "*":
-            continue  # skip padding
-        atom = Chem.Atom(symbol)
+    # Connectivity post-processing: prune small provisional fragments BEFORE
+    # bond assignment so disconnected specks never enter the molecule.
+    if min_fragment_atoms > 1:
+        kept = _keep_large_fragments(
+            pos, atomic_numbers, valid_atoms, min_fragment_atoms, distance_cutoff,
+        )
+        if len(kept) != len(valid_atoms) and bond_logits is not None \
+                and getattr(bond_logits, "ndim", 0) == 3:
+            bond_logits = None  # dense logits index the UNpruned atom set
+        valid_atoms = kept
+        if not valid_atoms:
+            return None
+
+    mol = Chem.RWMol()
+    for i in valid_atoms:
+        atom = Chem.Atom(_Z_TO_SYMBOL[int(atomic_numbers[i])])
         atom.SetNoImplicit(True)
-        idx = mol.AddAtom(atom)
-        valid_atoms.append(i)
+        mol.AddAtom(atom)
 
     if mol.GetNumAtoms() == 0:
         return None
@@ -148,13 +205,15 @@ def _add_bonds_from_distance(
     valid_atoms: list[int],
     distance_cutoff: float,
 ) -> None:
-    """Element-aware bond assignment via covalent radii.
+    """Element-aware bond assignment via covalent radii + tolerance matrix.
 
-    A pair is bonded iff ``dist <= r_i + r_j + _BOND_TOLERANCE`` (and within
-    the hard ``distance_cutoff`` cap). This excludes the contacts a plain
-    distance cutoff bonds spuriously — methyl H···H ≈ 1.78 Å, benzene 1-3
-    C···C ≈ 2.42 Å — which made even REAL QM9 molecules fail sanitization
-    (ground-truth control: 0.7% valid at cutoff 2.5 Å, 20.7% at 1.8 Å).
+    A pair is bonded iff ``dist <= r_i + r_j + get_bond_tolerance(i, j)``
+    (and within the hard ``distance_cutoff`` cap) — Strategy 0.4's
+    per-element-pair matrix replaces the old global +0.45 Å scalar. This
+    excludes the contacts a plain distance cutoff bonds spuriously — methyl
+    H···H ≈ 1.78 Å, benzene 1-3 C···C ≈ 2.42 Å — which made even REAL QM9
+    molecules fail sanitization (ground-truth control: 0.7% valid at cutoff
+    2.5 Å, 20.7% at 1.8 Å).
 
     Bond order is NOT inferable from distance alone (C–H 1.09 Å vs C≡C 1.20 Å
     overlap), so distance-derived bonds are SINGLE; bond types come from the
@@ -173,8 +232,83 @@ def _add_bonds_from_distance(
             rj = _COVALENT_RADII.get(int(atomic_numbers[j_orig]))
             if ri is None or rj is None:
                 continue
-            if dist <= ri + rj + _BOND_TOLERANCE:
+            if dist <= ri + rj + get_bond_tolerance(
+                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig])):
                 mol.AddBond(i_loc, j_loc, Chem.BondType.SINGLE)
+
+
+def _keep_large_fragments(
+    pos: np.ndarray,
+    atomic_numbers: np.ndarray,
+    valid_atoms: list[int],
+    min_fragment_atoms: int,
+    distance_cutoff: float,
+) -> list[int]:
+    """Indices of provisional fragments with ``>= min_fragment_atoms`` atoms.
+
+    Connectivity post-processing (recommendation.md, "Improving Connected
+    Validity" #2): build a provisional distance bond graph over the kept
+    atoms (same covalent-radii + tolerance-matrix rule), take its connected
+    components, and keep only fragments of at least ``min_fragment_atoms``
+    atoms. Removes isolated atoms (and, at threshold 3, spurious pairs)
+    before bond assignment.
+    """
+    n = len(valid_atoms)
+    parent = list(range(n))  # union-find over positions in valid_atoms
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a in range(n):
+        for b in range(a + 1, n):
+            i_orig, j_orig = valid_atoms[a], valid_atoms[b]
+            dist = float(np.linalg.norm(pos[i_orig] - pos[j_orig]))
+            if dist > distance_cutoff:
+                continue
+            ri = _COVALENT_RADII.get(int(atomic_numbers[i_orig]))
+            rj = _COVALENT_RADII.get(int(atomic_numbers[j_orig]))
+            if ri is None or rj is None:
+                continue
+            if dist <= ri + rj + get_bond_tolerance(
+                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig])):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+    sizes: dict[int, int] = {}
+    for a in range(n):
+        sizes[find(a)] = sizes.get(find(a), 0) + 1
+    return [
+        valid_atoms[a] for a in range(n) if sizes[find(a)] >= min_fragment_atoms
+    ]
+
+
+def apply_qed_filter(
+    mols: Sequence[Chem.Mol | None], min_qed: float
+) -> tuple[list[Chem.Mol | None], int]:
+    """Rejection-sampling filter on QED (recommendation.md, "Improving QED" #3).
+
+    Returns ``(filtered, n_dropped)`` where molecules with ``QED < min_qed``
+    (and ``None`` entries) are replaced by ``None`` — positions are kept so
+    per-sample rates stay honest. ``min_qed <= 0`` disables the filter.
+    """
+    if min_qed <= 0.0:
+        return list(mols), 0
+    filtered: list[Chem.Mol | None] = []
+    dropped = 0
+    for m in mols:
+        keep = False
+        if m is not None:
+            try:
+                keep = Descriptors.qed(m) >= min_qed
+            except Exception:
+                keep = False
+        filtered.append(m if keep else None)
+        dropped += 0 if keep else 1
+    return filtered, dropped
 
 
 # ---------------------------------------------------------------------------

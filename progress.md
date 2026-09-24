@@ -1,8 +1,8 @@
 # Project Progress & Rationale
 
 **Project:** Novel Molecular Generation using Graph GANs/Diffusion for BBB Permeability
-**Current Phase:** Phases 1–4 implemented; federated retrains running; geometry validated to 47.1% validity
-**Last Updated:** 20 Sep 2026 (CPU-only machine, `node1`)
+**Current Phase:** Phases 1–4 implemented; recommendation.md Tiers 0–3 implemented (V3 baseline: 62.2% validity, 99.2% uniq/novel)
+**Last Updated:** 24 Sep 2026 (CPU-only machine, `node1`)
 
 ---
 
@@ -102,6 +102,22 @@ All 6 strategies from validity_80_plan.md, wired through every entry point (`tra
 - **2D-only by decision**: interactive 3D (3Dmol.js + a WebGL-free canvas fallback renderer) was built and verified but removed — WebGL proved unavailable on the target machine. The 3D-capable versions live in git history (`f088ba0`..3d-fallback) if needed later.
 - Verified: 14 runs embedded, 385 molecule cards, zero JS errors in headless Chrome, no 3D remnants. Rebuild after any eval: `.venv/bin/python scripts/build_dashboard.py`.
 
+## 13.5 Recommendation-Report Implementation (Done — Tiers 1–3 + remaining; `docs/recommendation.md`)
+
+All of `docs/recommendation.md`'s actionable strategies implemented as opt-ins (defaults unchanged; legacy recipes and checkpoints valid throughout). Full per-item status lives in the doc's new "Implementation Status" appendix.
+
+- **Tier 1 (`dad20cc`)** — new `src/training_utils.py`: EMA (decay ramp; server-side variant in `src/fed/server.py` via a `_StateView` adapter; best.pt stores EMA weights, last.pt raw), min-SNR-γ timestep weighting (mean-1 normalized, per-molecule broadcast; γ=1 ⇒ P2), SO(3) rotation augmentation, warmup+cosine LR; `schedule="sigmoid"` in `CenteredDDPM`/`TypeDDPM`; everything gated by new `training.*` config keys, all default-off. `tests/test_tier1_training.py` (22 tests). Test-design lessons: min-SNR **caps** low-noise dominance (w = min(SNR,γ)/SNR); rotation must preserve per-molecule pairwise distances.
+- **Tier 2 (`0320004`)** — `EquivariantGenerator` gains `self_condition` (x0_proj, 50% train dropout), `coord_refine_layers` (zero-init refine EGNN ⇒ exact identity at init), `knn_schedule` (per-layer multi-scale graphs); bond-head supervision vs QM9 ground-truth `edge_index` (per-PAIR low-noise gate, `node_h.detach()` aux head, `training.bond_loss_weight`); resume guard extended to the Tier 2 flags; wired through train.py, fed trainer/server, sampler (SC auto-detect) and `generate_and_eval.py`. `tests/test_tier2_architecture.py` (17 tests). Verified: 3-epoch smoke train with ALL features on + resume guard + sampling. Coordinate-head lessons: everything coord-side is zero-init, so architecture tests must compare **type logits** and refine-head training tests need MSE vs a **nonzero target**.
+- **Tier 3.2 flow matching (`d49df80`)** — new `src/models/flow.py`: linear OT path `x_u = (1−u)·x0 + u·ε` with target velocity `v = ε − x0` (exactly the doc's `v = α'_t·x0 + σ'_t·ε` for α=1−u, σ=u), per-molecule re-centered noise, exact noise-free x0 recovery `x0 = x_u − u·v̂` at every u. Opt-in `diffusion.objective: flow` (DDPM `eps` stays default/fallback — the doc's risk-table mitigation); same architecture, no new parameters, legacy checkpoints load either way; u tied to the same t that drives the time embedding/type chain; Euler ODE sampler in `src/sampling.py` (auto-detected from `model.objective`); `x0_valence_penalty` made objective-agnostic; resume guard rejects eps↔flow switches; composes with all Tier 1/2 features. `tests/test_tier3_flow.py` (26 tests). Smoke train + flow-checkpoint generation verified.
+- **Tier 0.4 tolerance matrix** — `TOLERANCE_MATRIX`/`get_bond_tolerance()` in `src/utils/evaluation.py` replace the global +0.45 Å scalar in distance-based bonding: per-element-pair tolerances (H–H tight 0.25 vs methyl H···H false positives; C–O loose 0.50 vs carbonyl false negatives), unlisted pairs fall back to the scalar. Values encode the doc's qualitative guidance — recalibrate per pair on QM9 ground truth before trusting the +2–5% estimate.
+- **Connectivity post-processing** — `coords_and_types_to_mol(min_fragment_atoms=k)` prunes provisional distance-graph fragments < k atoms (union-find over the covalent-radii graph) before bond assignment; `--min_fragment_atoms` flag (1 = legacy).
+- **Type temperature** — `type_temperature` on `sample_molecules`' type posterior (flattens predicted type distributions → more scaffold diversity); `--type_temperature` flag.
+- **QED rejection filter** — `apply_qed_filter` + `--min_qed` (raw table reported first, then the filtered table).
+- **2.5 D3PM + 3.1/3.3/3.4** — scope notes in the doc's appendix: D3PM deferred (the EDM-style continuous noising + exact categorical posterior already provides a working discrete-type sampler; the chemistry-prior transition matrix requires retraining), Tier 3.1/3.3/3.4 are multi-day paradigm shifts deliberately not implemented.
+- Tests: full suite 173 passed + the known pre-existing order-dependent flake (`test_loss_beats_baseline`).
+
+**Next experiment:** retrain V3 with the winning opt-ins (EMA + min-SNR-γ + warmup-cosine + Tier 2 features + bond head) and re-run the Tier 0 eval sweeps (quadratic DDIM, η sweep, 500–1000 steps, tolerance matrix + min_fragment_atoms eval); or train fresh with `diffusion.objective: flow` for a direct paradigm comparison.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -115,6 +131,9 @@ All 6 strategies from validity_80_plan.md, wired through every entry point (`tra
 - `0030a73` sampler sweep: DDIM-200/eta0.5 Table I protocol (47.1/14.3)
 - `7f5deed` Phase 4 BBB metrics with oracle wiring and tests
 - `ce1ac05` federated configs to geo_esc recipe with trainer grad-clip guard
+- `dad20cc` Tier 1 training enhancements: EMA, min-SNR-gamma weighting, rotation augment, warmup-cosine LR, sigmoid schedule
+- `0320004` Tier 2 architecture: self-conditioning, bond-head supervision, multi-scale kNN, coordinate refinement head
+- `d49df80` Tier 3: flow matching objective and ODE sampler with DDPM fallback
 
 ## 15. What's Next
 

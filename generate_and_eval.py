@@ -100,6 +100,16 @@ def main() -> None:
     parser.add_argument("--step_schedule", type=str, default="linear",
                         choices=["linear", "quadratic"],
                         help="DDIM grid spacing (quadratic densifies low-noise steps)")
+    parser.add_argument("--type_temperature", type=float, default=1.0,
+                        help="Softmax temperature on type logits (>1 = more "
+                             "diverse scaffolds, recommendation.md ScaffDiv #2)")
+    parser.add_argument("--min_fragment_atoms", type=int, default=1,
+                        help="Connectivity post-processing: drop provisional "
+                             "distance-graph fragments smaller than this before "
+                             "bond assignment (1 = off, 2 = drop isolated atoms)")
+    parser.add_argument("--min_qed", type=float, default=0.0,
+                        help="Rejection filter: replace molecules with QED below "
+                             "this by invalid (0 = off; try 0.5 for drug-likeness)")
     args = parser.parse_args()
 
     # Config
@@ -193,6 +203,7 @@ def main() -> None:
             ddim_steps=args.ddim_steps,
             eta=args.eta,
             step_schedule=args.step_schedule,
+            type_temperature=args.type_temperature,
         )
 
         # Convert each generated molecule to RDKit
@@ -202,9 +213,21 @@ def main() -> None:
             mol_z = z[offset:offset + count].numpy()
             # Model type indices ARE raw atomic numbers (see note above).
             atomic_numbers = np.array([int(t) for t in mol_z])
-            mol = coords_and_types_to_mol(mol_pos, atomic_numbers)
+            mol = coords_and_types_to_mol(
+                mol_pos, atomic_numbers,
+                min_fragment_atoms=args.min_fragment_atoms,
+            )
             all_mols.append(mol)
             offset += count
+
+    # Rejection sampling on QED (recommendation.md, "Improving QED" #3):
+    # report the raw table first, then filter and evaluate the survivors.
+    if args.min_qed > 0.0:
+        from src.utils.evaluation import apply_qed_filter
+
+        all_mols, n_qed_dropped = apply_qed_filter(all_mols, args.min_qed)
+        print(f"QED filter (>= {args.min_qed:.2f}): dropped {n_qed_dropped} "
+              f"of {n_qed_dropped + sum(m is not None for m in all_mols)} molecules")
 
     # Evaluate
     bbb_classifier = None

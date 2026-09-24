@@ -509,3 +509,78 @@ Current: ~24.8% (from older model, TBD on V3)
 8. **G-SchNet**: Gebauer et al., "Symmetry-adapted generation of 3D point sets", NeurIPS 2019
 9. **EDM**: Hoogeboom et al., "Equivariant Diffusion for Molecule Generation in 3D", ICML 2022
 10. **GraphGANFed**: Manu et al., "A Federated Generative Framework for Graph-Structured Molecules", IEEE/ACM TCBB 2024
+
+---
+
+## Implementation Status (September 2026)
+
+State of each strategy in the codebase, in execution order. Everything is
+opt-in via config/flags; the legacy DDPM recipe remains the default.
+
+**Tier 0 (eval-only — no code needed, run the commands above):**
+- 0.1 quadratic DDIM, 0.2 step sweep, 0.3 η sweep, 0.5 multi-seed ensemble: the
+  flags (`--step_schedule quadratic`, `--ddim_steps`, `--eta`, `--seed`) already
+  exist; the sweeps are evaluation runs, not code changes.
+- **0.4 DONE** — `TOLERANCE_MATRIX` / `get_bond_tolerance()` in
+  `src/utils/evaluation.py` replace the global +0.45 Å scalar in
+  `_add_bonds_from_distance`; unlisted pairs fall back to the scalar.
+  Values encode the doc's qualitative guidance (H–H tight 0.25, C–O loose 0.50);
+  recalibrate per pair on QM9 ground truth before trusting the +2–5% estimate.
+
+**Tier 1 (DONE, `dad20cc`) — training enhancements, same architecture:**
+- 1.1 EMA (`src/training_utils.EMA`; `training.ema_decay`), also server-side in
+  `src/fed/server.py`; best.pt stores EMA weights.
+- 1.2 min-SNR-γ (`min_snr_weight`; `training.min_snr_gamma`; γ=1 ⇒ P2).
+- 1.3 more epochs: run-level (resume + patience), nothing to implement.
+- 1.4 warmup+cosine LR (`build_warmup_cosine_scheduler`; `training.warmup_epochs`).
+- 1.5 rotation augmentation (`training.rotation_augment_prob`).
+- 1.6 sigmoid schedule (`diffusion.schedule: sigmoid`).
+
+**Tier 2 (DONE, `0320004`) — architecture, all default-off and backward
+compatible (legacy checkpoints load unchanged):**
+- 2.1 self-conditioning (`model.self_condition`; 50% train dropout).
+- 2.2 bond-type prediction — supervision side DONE: `bond_head` trained with
+  CE against QM9 ground-truth `edge_index`, gated to low-noise molecules per
+  PAIR (`training.bond_loss_weight`). Inference still infers bonds from
+  distances; consuming predicted bond types at generation time is future work.
+- 2.3 multi-scale kNN (`model.knn_schedule`, e.g. [4,4,8,8,12,12,16,16]).
+- 2.4 coordinate refinement head (`model.coord_refine_layers`; zero-init ⇒
+  identity at init, safe to bolt onto any run).
+- 2.5 **NOT IMPLEMENTED** (scope note): the EDM-style continuous noising of
+  one-hot types plus the exact categorical posterior in `TypeDDPM` already
+  provides a working discrete-type sampler; D3PM's benefit here would be a
+  chemistry-informed transition matrix (C→N ≫ C→F), which requires retraining
+  and a principled matrix for raw-atomic-number indexing. Deferred.
+
+**Tier 3:**
+- **3.2 DONE** (`d49df80`) — flow matching with velocity prediction on the
+  linear OT path (`src/models/flow.py`): target ``v = α'_t·x0 + σ'_t·ε = ε − x0``;
+  opt-in via `diffusion.objective: flow` (DDPM `eps` objective remains the
+  default and fallback — risk-table mitigation honored); Euler ODE sampler in
+  `src/sampling.py` (auto-detected from `model.objective`); exact
+  noise-free x0 recovery `x0 = x_u − u·v` at every u; composes with all Tier 1/2
+  features; resume guard rejects eps↔flow switches. Same architecture — no new
+  parameters.
+- 3.1 latent diffusion (GeoLDM), 3.3 autoregressive, 3.4 hybrid: **NOT
+  IMPLEMENTED** — multi-day paradigm shifts (2–3 days to 1 week each per the
+  effort estimates above), deferred until the Tier 1–3 + Tier 0 retrain/sweep
+  results justify the investment.
+
+**Metric-specific strategies (from "Strategies for Specific Metrics"):**
+- Connectivity #2 **DONE** — `coords_and_types_to_mol(min_fragment_atoms=k)`
+  prunes provisional distance-graph fragments smaller than k atoms before bond
+  assignment (exposed as `--min_fragment_atoms`).
+- Scaffold diversity #2 **DONE** — `--type_temperature` on the sampler's type
+  posterior.
+- QED #3 **DONE** — `apply_qed_filter` + `--min_qed` rejection filter
+  (raw table always reported first).
+- SNN (#1 guidance, #2 lower η), scaffold conditioning, QED-guided sampling,
+  connectivity loss (differentiable Laplacian), larger kNN, BBB conditioned
+  generation: conditioning infrastructure exists (Phase 2); the guided/
+  oracle-based sampling variants are future work.
+
+**Recommended next experiment:** retrain V3
+(`configs/central_v3_full.yaml`) with the winning opt-ins (EMA + min-SNR-γ +
+warmup-cosine + Tier 2 self-conditioning/kNN-schedule + bond head) and re-run
+the Tier 0 eval sweeps; alternatively train a fresh run with
+`diffusion.objective: flow` to compare paradigms directly.

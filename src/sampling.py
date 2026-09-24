@@ -62,6 +62,7 @@ def sample_molecules(
     step_schedule: str = "linear",
     use_self_conditioning: bool | None = None,
     objective: str | None = None,
+    type_temperature: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -93,6 +94,11 @@ def sample_molecules(
             (DDPM noise; DDPM/DDIM samplers) or ``"flow"`` (Tier 3.2
             velocity field; Euler ODE integration). ``None`` (default)
             auto-detects from ``model.objective``.
+        type_temperature: softmax temperature on the type logits before the
+            categorical posterior (recommendation.md, "Improving Scaffold
+            Diversity" #2). ``>1`` flattens the distribution — more diverse
+            atom types/scaffolds at some validity cost; ``<1`` sharpens it.
+            ``1.0`` is the legacy behavior.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -142,8 +148,13 @@ def sample_molecules(
 
     def _update_types(type_logits: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """One categorical posterior step q(z_{t-1} | z_t, p0) for all atoms."""
+        # Temperature scaling (recommendation.md, scaffold diversity):
+        # flattening the predicted distribution widens the type/scaffold
+        # distribution sampled at every step.
         probs = type_ddpm.posterior_probs(
-            z, torch.softmax(type_logits, dim=-1), t, model.num_types, batch,
+            z,
+            torch.softmax(type_logits / type_temperature, dim=-1),
+            t, model.num_types, batch,
         ).to(device)
         # Bulletproof multinomial input: any non-finite/negative entry (e.g.
         # from extreme logits on rare noisy inputs) falls back to uniform for

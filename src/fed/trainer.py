@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
+from src.models.flow import flow_interpolate
 from src.objectives import diversity_regularizer, x0_valence_penalty
 from src.training_utils import min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
@@ -100,6 +101,19 @@ class LocalTrainer:
         self.type_ddpm = type_ddpm
         self.cfg = config
         self.device = torch.device(device)
+        # Tier 3.2: prediction-target semantics ("eps" [default] or "flow").
+        # Objectives share one architecture — only the regression target and
+        # sampler change — so the flag is set on the model rather than
+        # re-architecting (mirrors train.py).
+        self.objective = str(
+            config.get("diffusion", {}).get("objective", "eps")
+        ).lower()
+        if self.objective not in ("eps", "flow"):
+            raise ValueError(
+                f"Unknown diffusion.objective={self.objective!r} "
+                f"(expected 'eps' or 'flow')"
+            )
+        self.model.objective = self.objective
 
     def _extract_cond(self, batch_data) -> dict[str, torch.Tensor] | None:
         """Build the Phase 2 conditioning dict from a BBB batch.
@@ -177,6 +191,18 @@ class LocalTrainer:
         aug_rot = float(self.cfg["training"].get("rotation_augment_prob", 0.0))
         if optimizer is not None and aug_rot > 0.0 and torch.rand(1).item() < aug_rot:
             batch_data.pos = rotate_batch(batch_data.pos, batch_data.batch)
+        # Tier 3.2: coordinate corruption — DDPM noise (default) or the
+        # flow-matching linear path per molecule. Flow ties u to the same t
+        # that drives the time embedding / type chain, keeping conditioning
+        # consistent with the corruption level (mirrors train.py).
+        if self.objective == "flow":
+            u = t.float() / max(self.coord_ddpm.num_steps - 1, 1)
+            noisy_pos, v_target = flow_interpolate(
+                batch_data.pos, u, batch_data.batch)
+        else:
+            noisy_pos, actual_noise = self.coord_ddpm.add_noise(
+                batch_data.pos, t, batch_data.batch,
+            )
         # Phase 2: property conditioning with label dropout for
         # classifier-free guidance (10% unconditional by default).
         cond = self._extract_cond(batch_data)
@@ -212,11 +238,15 @@ class LocalTrainer:
             and torch.rand(1).item() >= float(
                 self.cfg["training"].get("self_cond_dropout", 0.5))
         ):
-            ab = self.coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
-            x0_estimate = (
-                noisy_pos
-                - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
-            ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
+            if self.objective == "flow":
+                # Zero-velocity draft x0 = x_u (exact analog of the eps draft).
+                x0_estimate = noisy_pos
+            else:
+                ab = self.coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
+                x0_estimate = (
+                    noisy_pos
+                    - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
+                ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
         noise_pred, type_logits, node_h = self.model(
             noisy_types, noisy_pos, edge_index, t, batch_data.batch, cond=cond,
             x0_estimate=x0_estimate,
@@ -224,17 +254,23 @@ class LocalTrainer:
         )
 
         # Strategy 1.2: optional min-SNR-γ timestep weighting on the
-        # coordinate loss (same default-off contract as train.py).
-        pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
-        snr_gamma = float(self.cfg["training"].get("min_snr_gamma", 0.0))
-        if snr_gamma > 0.0:
-            w = min_snr_weight(
-                t, self.coord_ddpm.alpha_bars,
-                batch=batch_data.batch, gamma=snr_gamma,
-            )
-            pos_loss = (w * pos_loss_raw).mean()
-        else:
+        # coordinate loss (same default-off contract as train.py). Tier 3.2:
+        # the flow objective regresses the velocity target instead, and
+        # min-SNR (defined over the DDPM SNR) does not apply to it.
+        if self.objective == "flow":
+            pos_loss_raw = F.mse_loss(noise_pred, v_target, reduction="none").mean(dim=-1)
             pos_loss = pos_loss_raw.mean()
+        else:
+            pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
+            snr_gamma = float(self.cfg["training"].get("min_snr_gamma", 0.0))
+            if snr_gamma > 0.0:
+                w = min_snr_weight(
+                    t, self.coord_ddpm.alpha_bars,
+                    batch=batch_data.batch, gamma=snr_gamma,
+                )
+                pos_loss = (w * pos_loss_raw).mean()
+            else:
+                pos_loss = pos_loss_raw.mean()
         type_loss = F.cross_entropy(type_logits, z_idx)
         loss = pos_loss + lambda_type * type_loss
 
@@ -249,6 +285,7 @@ class LocalTrainer:
                 alpha_bars=self.coord_ddpm.alpha_bars,
                 lambda_weight=lambda_valence,
                 tau=int(self.cfg["training"].get("valence_tau", 200)),
+                objective=self.objective,
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(
@@ -388,6 +425,7 @@ def init_model_from_state(
         self_condition=bool(model_cfg.get("self_condition", False)),
         coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
         knn_schedule=model_cfg.get("knn_schedule") or None,
+        objective=str(model_cfg.get("objective", "eps")),
     ).to(device)
     if state is not None:
         model.load_state_dict(state)

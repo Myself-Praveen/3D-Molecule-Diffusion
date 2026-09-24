@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from src.models.diffusion import CenteredDDPM, TypeDDPM
+from src.models.flow import flow_time_embedding, flow_x0_pred
 from src.utils.graph import build_knn_graph
 
 
@@ -60,6 +61,7 @@ def sample_molecules(
     guidance_scale: float = 0.0,
     step_schedule: str = "linear",
     use_self_conditioning: bool | None = None,
+    objective: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -87,6 +89,10 @@ def sample_molecules(
         use_self_conditioning: Tier 2.1 — feed the previous step's x0
             estimate back into the model. ``None`` (default) auto-detects:
             on iff the model was trained with ``self_condition=True``.
+        objective: prediction target the model was trained with — ``"eps"``
+            (DDPM noise; DDPM/DDIM samplers) or ``"flow"`` (Tier 3.2
+            velocity field; Euler ODE integration). ``None`` (default)
+            auto-detects from ``model.objective``.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -128,6 +134,82 @@ def sample_molecules(
 
     # Tier 2.3: per-layer kNN graphs when the model carries a schedule.
     knn_schedule = getattr(model, "knn_schedule", None)
+
+    # Tier 3.2: prediction target — auto-detected from the model when None.
+    obj = (objective or getattr(model, "objective", "eps")).lower()
+    if obj not in ("eps", "flow"):
+        raise ValueError(f"Unknown objective={obj!r} (expected 'eps' or 'flow')")
+
+    def _update_types(type_logits: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """One categorical posterior step q(z_{t-1} | z_t, p0) for all atoms."""
+        probs = type_ddpm.posterior_probs(
+            z, torch.softmax(type_logits, dim=-1), t, model.num_types, batch,
+        ).to(device)
+        # Bulletproof multinomial input: any non-finite/negative entry (e.g.
+        # from extreme logits on rare noisy inputs) falls back to uniform for
+        # that atom instead of crashing the whole generation run.
+        bad_rows = (~torch.isfinite(probs)).any(dim=-1) | (probs.sum(dim=-1) <= 0)
+        if bad_rows.any():
+            uniform = torch.full_like(probs, 1.0 / probs.size(-1))
+            probs = torch.where(bad_rows.view(-1, 1), uniform, probs)
+        probs = probs.clamp_min(0.0)
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+    if obj == "flow":
+        # Velocity-field ODE integration (Euler, downward in u):
+        #   x_{u-dt} = x_u - dt * v̂,   dt = 1 / num_ode_steps.
+        # Straight OT paths make this exact for constant v̂ along a path; the
+        # final step lands on the (clamped) clean-coordinate prediction.
+        num_ode_steps = ddim_steps or coord_ddpm.num_steps
+        dt = 1.0 / num_ode_steps
+        T = coord_ddpm.num_steps
+        for i in range(num_ode_steps):
+            u_cur = 1.0 - i * dt
+            t_cur = int(flow_time_embedding(u_cur, T).item())
+            t = torch.full((num_graphs,), t_cur, dtype=torch.long, device=device)
+            edge_index = build_knn_graph(pos, batch, k=4)
+            edge_index_per_layer = None
+            if knn_schedule:
+                edge_index_per_layer = [
+                    build_knn_graph(pos, batch, k=k_layer) for k_layer in knn_schedule
+                ]
+
+            if guidance_scale > 0.0 and cond is not None:
+                v_c, logits_c, _ = model(
+                    z, pos, edge_index, t, batch, cond=cond,
+                    x0_estimate=x0_estimate,
+                    edge_index_per_layer=edge_index_per_layer)
+                v_u, logits_u, _ = model(
+                    z, pos, edge_index, t, batch, cond=None,
+                    x0_estimate=x0_estimate,
+                    edge_index_per_layer=edge_index_per_layer)
+                v_pred = v_u + guidance_scale * (v_c - v_u)
+                type_logits = logits_u + guidance_scale * (logits_c - logits_u)
+            else:
+                v_pred, type_logits, _ = model(
+                    z, pos, edge_index, t, batch, cond=cond,
+                    x0_estimate=x0_estimate,
+                    edge_index_per_layer=edge_index_per_layer,
+                )
+
+            # Numerical guard (same rationale as the eps path).
+            type_logits = type_logits.clamp(-15.0, 15.0)
+
+            x0_pred = flow_x0_pred(v_pred, pos, u_cur, batch=batch, clamp=x0_clamp)
+            # Tier 2.1: refined x0 becomes the next step's self-conditioning
+            # input, exactly as on the DDIM path.
+            if self_cond:
+                x0_estimate = x0_pred
+            if i + 1 < num_ode_steps:
+                pos = pos - dt * v_pred
+            else:
+                pos = x0_pred
+            pos = _center_per_molecule(pos, batch)
+            z = _update_types(type_logits, t)
+
+        pos = _center_per_molecule(pos, batch)
+        return pos.cpu(), z.cpu()
 
     for step_idx, t_cur in enumerate(timestep_iter):
         t = torch.full((num_graphs,), t_cur, dtype=torch.long, device=device)
@@ -203,19 +285,7 @@ def sample_molecules(
         pos = _center_per_molecule(pos, batch)
 
         # --- Atom-type update via categorical posterior q(z_{t-1} | z_t, p0) ---
-        probs = type_ddpm.posterior_probs(
-            z, torch.softmax(type_logits, dim=-1), t, model.num_types, batch,
-        ).to(device)
-        # Bulletproof multinomial input: any non-finite/negative entry (e.g.
-        # from extreme logits on rare noisy inputs) falls back to uniform for
-        # that atom instead of crashing the whole generation run.
-        bad_rows = (~torch.isfinite(probs)).any(dim=-1) | (probs.sum(dim=-1) <= 0)
-        if bad_rows.any():
-            uniform = torch.full_like(probs, 1.0 / probs.size(-1))
-            probs = torch.where(bad_rows.view(-1, 1), uniform, probs)
-        probs = probs.clamp_min(0.0)
-        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-        z = torch.multinomial(probs, num_samples=1).squeeze(-1)
+        z = _update_types(type_logits, t)
 
     pos = _center_per_molecule(pos, batch)
     return pos.cpu(), z.cpu()

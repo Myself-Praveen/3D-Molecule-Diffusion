@@ -34,6 +34,36 @@ def distance_adjacency_probs(pos: torch.Tensor, pair_index: torch.Tensor) -> tor
     return torch.sigmoid((_BOND_CUTOFF - dist) / _SOFTNESS)
 
 
+def x0_from_prediction(
+    pred: torch.Tensor,
+    noisy_pos: torch.Tensor,
+    t: torch.Tensor,
+    batch: torch.Tensor,
+    alpha_bars: torch.Tensor | None = None,
+    objective: str = "eps",
+) -> torch.Tensor:
+    """Predicted clean coordinates from either prediction target.
+
+    - ``objective="eps"`` (DDPM noise prediction):
+      ``x0 = (x_t - sqrt(1-ab) * eps) / sqrt(ab)``.
+    - ``objective="flow"`` (Tier 3.2 velocity prediction on the linear path
+      ``x_u = (1-u) x0 + u eps``): ``x0 = x_u - u * v`` — well-conditioned at
+      every u, no sqrt(ab) division (t maps to u via t/(T-1)).
+    """
+    if objective == "flow":
+        from src.models.flow import flow_x0_pred
+
+        # t -> u via the same convention the trainers use (t = 0..T-1 maps
+        # to u = 0..1); alpha_bars carries T when available.
+        T = len(alpha_bars) if alpha_bars is not None else 1000
+        u = t.to(noisy_pos.device).float() / max(T - 1, 1)
+        return flow_x0_pred(pred, noisy_pos, u, batch=batch)
+    ab = alpha_bars.to(noisy_pos.device)[t][batch]
+    s1 = (1.0 - ab).sqrt().unsqueeze(-1)
+    s0 = ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
+    return (noisy_pos - s1 * pred) / s0
+
+
 def x0_valence_penalty(
     noise_pred: torch.Tensor,
     noisy_pos: torch.Tensor,
@@ -47,6 +77,7 @@ def x0_valence_penalty(
     lambda_weight: float = 1.0,
     tau: int = 200,
     x0_clamp: float = 5.0,
+    objective: str = "eps",
 ) -> torch.Tensor:
     """λ₂ validity pressure that actually trains geometry.
 
@@ -59,19 +90,20 @@ def x0_valence_penalty(
        160×-amplified error and the penalty is meaningless; fine bonds are
        decided at low noise. Type probabilities are detached so the model
        cannot dodge by predicting carbon everywhere.
-    Returns 0 when no graph in the batch passes the gate.
+    ``objective="flow"`` recovers x0 from a velocity prediction (Tier 3.2)
+    instead of a noise prediction. Returns 0 when no graph passes the gate.
     """
     if lambda_weight <= 0.0:
         return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
     gate = (t < tau)
     if not bool(gate.any()):
         return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
-    ab = alpha_bars.to(noise_pred.device)[t][batch]
-    s1 = (1.0 - ab).sqrt().unsqueeze(-1)
-    s0 = ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
     with torch.no_grad():
         keep = gate[batch]
-    x0_pred = ((noisy_pos - s1 * noise_pred) / s0).clamp(-x0_clamp, x0_clamp)
+    x0_pred = x0_from_prediction(
+        noise_pred, noisy_pos, t, batch,
+        alpha_bars=alpha_bars, objective=objective,
+    ).clamp(-x0_clamp, x0_clamp)
     x0_pred = x0_pred[keep]
     probs = torch.softmax(type_logits, dim=-1).detach()[keep]
     _, remap = torch.unique(batch[keep], return_inverse=True)

@@ -131,6 +131,14 @@ def main() -> None:
         coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
         knn_schedule=model_cfg.get("knn_schedule") or None,
     ).to(device)
+    # Tier 3.2: prediction target the checkpoint was trained with ("eps" DDPM
+    # noise [default] or "flow" velocity). The sampler auto-detects from this.
+    objective = str(diff_cfg.get("objective", "eps")).lower()
+    if objective not in ("eps", "flow"):
+        raise ValueError(
+            f"Unknown diffusion.objective={objective!r} (expected 'eps' or 'flow')"
+        )
+    model.objective = objective
     model.load_state_dict(_load_model_weights(ckpt, model))
 
     coord_ddpm = CenteredDDPM(

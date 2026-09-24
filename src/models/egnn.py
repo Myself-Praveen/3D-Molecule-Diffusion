@@ -125,8 +125,19 @@ class EquivariantGenerator(nn.Module):
         self_condition: bool = False,
         coord_refine_layers: int = 0,
         knn_schedule: list[int] | None = None,
+        objective: str = "eps",
     ) -> None:
         super().__init__()
+        if objective not in ("eps", "flow"):
+            raise ValueError(
+                f"Unknown objective={objective!r} (expected 'eps' or 'flow')"
+            )
+        # Tier 3.2 (docs/recommendation.md): prediction-target semantics only —
+        # "eps" regresses DDPM noise, "flow" regresses the flow-matching
+        # velocity v = eps - x0 on the linear OT path. Purely a dispatch marker
+        # for the trainer/sampler: the architecture and parameter set are
+        # identical, so legacy checkpoints load either way.
+        self.objective = objective
         self.num_types = num_types
         self.time_dim = time_dim
         self.cond_dim = cond_dim

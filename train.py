@@ -25,6 +25,7 @@ from src.dataset import load_qm9
 from src.fed.trainer import TYPE_TO_Z
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
+from src.models.flow import flow_interpolate
 from src.objectives import diversity_regularizer, full_pair_index, x0_valence_penalty
 from src.training_utils import EMA, build_warmup_cosine_scheduler, min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
@@ -189,6 +190,14 @@ def train_diffusion(
         coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
         knn_schedule=model_cfg.get("knn_schedule") or None,
     ).to(device)
+    # Tier 3.2: prediction-target semantics ("eps" DDPM noise [default] or
+    # "flow" velocity on the linear OT path). Same architecture either way.
+    objective = str(diff_cfg.get("objective", "eps")).lower()
+    if objective not in ("eps", "flow"):
+        raise ValueError(
+            f"Unknown diffusion.objective={objective!r} (expected 'eps' or 'flow')"
+        )
+    model.objective = objective
 
     optimizer = Adam(
         model.parameters(),
@@ -209,6 +218,9 @@ def train_diffusion(
     ema = EMA(model, decay=ema_decay, warmup=int(train_cfg.get("ema_warmup_steps", 1000))) \
         if ema_decay > 0.0 else None
     snr_gamma = float(train_cfg.get("min_snr_gamma", 0.0))
+    if snr_gamma > 0.0 and objective == "flow":
+        print("  ! min_snr_gamma ignored with diffusion.objective=flow "
+              "(SNR weighting is defined over the DDPM schedule only)")
     aug_rot = float(train_cfg.get("rotation_augment_prob", 0.0))
     # Tier 2 opt-ins
     sc_dropout = float(train_cfg.get("self_cond_dropout", 0.5))  # Chen et al. 50%
@@ -254,6 +266,15 @@ def train_diffusion(
                 raise ValueError(
                     f"Resume config mismatch for diffusion.schedule: "
                     f"checkpoint={resume_sched} vs current={diff_cfg.get('schedule', 'linear')}. "
+                    f"Refusing to resume."
+                )
+            # Tier 3.2: the prediction target is baked into the weights just
+            # like the schedule — an eps↔flow switch invalidates training.
+            resume_obj = resume_state.get("config", {}).get("diffusion", {}).get("objective", "eps")
+            if resume_obj != objective:
+                raise ValueError(
+                    f"Resume config mismatch for diffusion.objective: "
+                    f"checkpoint={resume_obj} vs current={objective}. "
                     f"Refusing to resume."
                 )
             model.load_state_dict(resume_state["model_state_dict"])
@@ -312,10 +333,20 @@ def train_diffusion(
             if aug_rot > 0.0 and torch.rand(1).item() < aug_rot:
                 batch_data.pos = rotate_batch(batch_data.pos, batch_data.batch)
 
-            # Coordinate diffusion
-            noisy_pos, actual_noise = coord_ddpm.add_noise(
-                batch_data.pos, t, batch_data.batch,
-            )
+            # Coordinate corruption: DDPM noise (default) or Tier 3.2
+            # flow-matching linear path per molecule. Flow ties u to the same
+            # t that drives the time embedding and type chain, so conditioning
+            # always matches the geometry corruption level (and the sampler's
+            # u->t grid).
+            if objective == "flow":
+                u = t.float() / max(coord_ddpm.num_steps - 1, 1)
+                noisy_pos, v_target = flow_interpolate(
+                    batch_data.pos, u, batch_data.batch,
+                )
+            else:
+                noisy_pos, actual_noise = coord_ddpm.add_noise(
+                    batch_data.pos, t, batch_data.batch,
+                )
 
             # Atom-type diffusion (EDM-style categorical). batch= is required:
             # without it _atom_batch broadcasts one timestep per ATOM, so the
@@ -341,11 +372,16 @@ def train_diffusion(
             # the rest see None, exactly like the Analog Bits schedule.
             x0_estimate = None
             if model.self_condition and torch.rand(1).item() >= sc_dropout:
-                ab = coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
-                x0_estimate = (
-                    noisy_pos
-                    - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
-                ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
+                if objective == "flow":
+                    # Zero-velocity draft x0 = x_u - u*0 = x_u: the exact
+                    # analog of the eps-objective draft below.
+                    x0_estimate = noisy_pos
+                else:
+                    ab = coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
+                    x0_estimate = (
+                        noisy_pos
+                        - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
+                    ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
 
             noise_pred, type_logits, node_h = model(
                 noisy_types, noisy_pos, edge_index, t, batch_data.batch,
@@ -353,16 +389,21 @@ def train_diffusion(
                 edge_index_per_layer=edge_index_per_layer,
             )
 
-            # Losses. Strategy 1.2: optional min-SNR-γ weighting on the
-            # coordinate loss focuses learning on low-noise timesteps where
-            # bond-length precision is decided.
-            pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
-            if snr_gamma > 0.0:
-                w = min_snr_weight(t, coord_ddpm.alpha_bars,
-                                   batch=batch_data.batch, gamma=snr_gamma)
-                pos_loss = (w * pos_loss_raw).mean()
-            else:
+            # Losses. Coordinate target: DDPM noise (eps) or flow velocity
+            # v = eps - x0 (Tier 3.2). Strategy 1.2: optional min-SNR-γ
+            # weighting (eps objective only — it is defined over the SNR of
+            # the DDPM schedule).
+            if objective == "flow":
+                pos_loss_raw = F.mse_loss(noise_pred, v_target, reduction="none").mean(dim=-1)
                 pos_loss = pos_loss_raw.mean()
+            else:
+                pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
+                if snr_gamma > 0.0:
+                    w = min_snr_weight(t, coord_ddpm.alpha_bars,
+                                       batch=batch_data.batch, gamma=snr_gamma)
+                    pos_loss = (w * pos_loss_raw).mean()
+                else:
+                    pos_loss = pos_loss_raw.mean()
             type_loss = F.cross_entropy(type_logits, batch_data.z.long())
             loss = pos_loss + lambda_type * type_loss
 
@@ -404,6 +445,7 @@ def train_diffusion(
                     alpha_bars=coord_ddpm.alpha_bars,
                     lambda_weight=lambda_valence,
                     tau=int(train_cfg.get("valence_tau", 200)),
+                    objective=objective,
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(
@@ -452,18 +494,34 @@ def train_diffusion(
                     (batch_data.num_graphs,),
                     device=device,
                 )
-                noisy_pos, actual_noise = coord_ddpm.add_noise(
-                    batch_data.pos, t, batch_data.batch,
-                )
-                noisy_types = type_ddpm.sample_noisy_types(
-                    batch_data.z, t, model_cfg["num_types"],
-                    batch=batch_data.batch,
-                )
-                edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
-                noise_pred, type_logits, _ = model(
-                    noisy_types, noisy_pos, edge_index, t, batch_data.batch,
-                )
-                val_pos_loss += F.mse_loss(noise_pred, actual_noise).item()
+                if objective == "flow":
+                    u = t.float() / max(coord_ddpm.num_steps - 1, 1)
+                    noisy_pos, v_target = flow_interpolate(
+                        batch_data.pos, u, batch_data.batch)
+                    noisy_types = type_ddpm.sample_noisy_types(
+                        batch_data.z, t, model_cfg["num_types"],
+                        batch=batch_data.batch,
+                    )
+                    edge_index = build_knn_graph(
+                        noisy_pos, batch_data.batch, k=train_cfg["kNN"])
+                    v_pred, type_logits, _ = model(
+                        noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                    )
+                    val_pos_loss += F.mse_loss(v_pred, v_target).item()
+                else:
+                    noisy_pos, actual_noise = coord_ddpm.add_noise(
+                        batch_data.pos, t, batch_data.batch,
+                    )
+                    noisy_types = type_ddpm.sample_noisy_types(
+                        batch_data.z, t, model_cfg["num_types"],
+                        batch=batch_data.batch,
+                    )
+                    edge_index = build_knn_graph(
+                        noisy_pos, batch_data.batch, k=train_cfg["kNN"])
+                    noise_pred, type_logits, _ = model(
+                        noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                    )
+                    val_pos_loss += F.mse_loss(noise_pred, actual_noise).item()
                 val_type_loss += F.cross_entropy(type_logits, batch_data.z.long()).item()
 
         avg_val_pos = val_pos_loss / max(len(val_loader), 1)
@@ -586,18 +644,34 @@ def train_diffusion(
                 (batch_data.num_graphs,),
                 device=device,
             )
-            noisy_pos, actual_noise = coord_ddpm.add_noise(
-                batch_data.pos, t, batch_data.batch,
-            )
-            noisy_types = type_ddpm.sample_noisy_types(
-                batch_data.z, t, model_cfg["num_types"],
-                batch=batch_data.batch,
-            )
-            edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
-            noise_pred, type_logits, _ = model(
-                noisy_types, noisy_pos, edge_index, t, batch_data.batch,
-            )
-            test_pos_loss += F.mse_loss(noise_pred, actual_noise).item()
+            if objective == "flow":
+                u = t.float() / max(coord_ddpm.num_steps - 1, 1)
+                noisy_pos, v_target = flow_interpolate(
+                    batch_data.pos, u, batch_data.batch)
+                noisy_types = type_ddpm.sample_noisy_types(
+                    batch_data.z, t, model_cfg["num_types"],
+                    batch=batch_data.batch,
+                )
+                edge_index = build_knn_graph(
+                    noisy_pos, batch_data.batch, k=train_cfg["kNN"])
+                v_pred, type_logits, _ = model(
+                    noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                )
+                test_pos_loss += F.mse_loss(v_pred, v_target).item()
+            else:
+                noisy_pos, actual_noise = coord_ddpm.add_noise(
+                    batch_data.pos, t, batch_data.batch,
+                )
+                noisy_types = type_ddpm.sample_noisy_types(
+                    batch_data.z, t, model_cfg["num_types"],
+                    batch=batch_data.batch,
+                )
+                edge_index = build_knn_graph(
+                    noisy_pos, batch_data.batch, k=train_cfg["kNN"])
+                noise_pred, type_logits, _ = model(
+                    noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                )
+                test_pos_loss += F.mse_loss(noise_pred, actual_noise).item()
             test_type_loss += F.cross_entropy(type_logits, batch_data.z.long()).item()
 
     avg_test_pos = test_pos_loss / max(len(test_loader), 1)

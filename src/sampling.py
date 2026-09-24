@@ -206,6 +206,13 @@ def sample_molecules(
 
             # Numerical guard (same rationale as the eps path).
             type_logits = type_logits.clamp(-15.0, 15.0)
+            # Robustness: an undertrained/OOD-drifted model can emit non-finite
+            # predictions mid-trajectory (observed: huge self-conditioning
+            # input at high noise -> exploding velocity -> float32 overflow
+            # two steps later). Substituting the predict-zero step keeps the
+            # run alive — degraded quality beats a NaN-poisoned evaluation.
+            if not torch.isfinite(v_pred).all():
+                v_pred = torch.zeros_like(v_pred)
 
             x0_pred = flow_x0_pred(v_pred, pos, u_cur, batch=batch, clamp=x0_clamp)
             # Tier 2.1: refined x0 becomes the next step's self-conditioning
@@ -253,6 +260,13 @@ def sample_molecules(
         # Numerical guard: a confident model emits large logits whose softmax
         # saturates; clamping keeps the categorical posterior finite.
         type_logits = type_logits.clamp(-15.0, 15.0)
+        # Robustness: same non-finite-prediction guard as the flow path —
+        # an undertrained model can spike mid-trajectory (e.g. responding
+        # OOD to the clamped high-noise self-conditioning input); the
+        # predict-zero substitution degrades one step instead of poisoning
+        # the whole trajectory via the x0/pos update.
+        if not torch.isfinite(noise_pred).all():
+            noise_pred = torch.zeros_like(noise_pred)
         alpha_t = coord_ddpm.alphas[t_cur]
         alpha_bar_t = coord_ddpm.alpha_bars[t_cur]
 

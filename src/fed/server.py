@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 
 from src.fed.trainer import LocalTrainer, merge_global_personal, split_global_personal
+from src.training_utils import EMA
 
 
 class FederatedServer:
@@ -46,6 +47,16 @@ class FederatedServer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.mu = float(config["fed"].get("proximal_mu", 0.0))
         self.personalized = bool(config["fed"].get("personal_heads", False))
+        # Strategy 1.1: server-side EMA over the aggregated global weights.
+        # Off by default (ema_decay=0.0). When on, ``global_state`` (what is
+        # broadcast and saved) is the EMA — clients still train on raw
+        # aggregated weights, so the EMA only smooths the broadcast/saved
+        # trajectory without touching local optimization dynamics.
+        ema_decay = float(config["training"].get("ema_decay", 0.0))
+        self.ema = None
+        if ema_decay > 0.0:
+            self.ema = EMA(trainers[0].model, decay=ema_decay,
+                           warmup=int(config["training"].get("ema_warmup_steps", 1000)))
         self.history: list[dict] = []
 
     # ------------------------------------------------------------------ core
@@ -123,6 +134,12 @@ class FederatedServer:
             for trainer, res in zip(self.trainers, results)
         ]
         aggregated = weighted_avg(client_states)
+
+        # Strategy 1.1: fold the new aggregate into the EMA shadow and use
+        # the EMA weights as the effective global model for this round.
+        if self.ema is not None:
+            self.ema.update(_StateView(aggregated))
+            aggregated = {k: v.clone() for k, v in self.ema.shadow.items()}
 
         # Install aggregated weights into every trainer.
         for trainer in self.trainers:
@@ -299,3 +316,15 @@ def weighted_avg(
     from src.fed.trainer import weighted_fedavg
 
     return weighted_fedavg(client_states)
+
+
+class _StateView:
+    """Minimal state-dict-like adapter so EMA.update() works on a plain
+    ``{str: Tensor}`` aggregate (its single argument only needs
+    ``.state_dict()``)."""
+
+    def __init__(self, state: dict[str, torch.Tensor]) -> None:
+        self._state = state
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        return self._state

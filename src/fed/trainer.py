@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.objectives import diversity_regularizer, x0_valence_penalty
+from src.training_utils import min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
 
 # FedPer-style personal parameters: kept local, never aggregated.
@@ -171,6 +172,11 @@ class LocalTrainer:
             0, self.coord_ddpm.num_steps,
             (batch_data.num_graphs,), device=self.device,
         )
+        # Strategy 1.5: random per-molecule SO(3) rotation augmentation
+        # (train-time only; evaluation keeps the true geometry).
+        aug_rot = float(self.cfg["training"].get("rotation_augment_prob", 0.0))
+        if optimizer is not None and aug_rot > 0.0 and torch.rand(1).item() < aug_rot:
+            batch_data.pos = rotate_batch(batch_data.pos, batch_data.batch)
         # Phase 2: property conditioning with label dropout for
         # classifier-free guidance (10% unconditional by default).
         cond = self._extract_cond(batch_data)
@@ -195,7 +201,18 @@ class LocalTrainer:
             noisy_types, noisy_pos, edge_index, t, batch_data.batch, cond=cond,
         )
 
-        pos_loss = F.mse_loss(noise_pred, actual_noise)
+        # Strategy 1.2: optional min-SNR-γ timestep weighting on the
+        # coordinate loss (same default-off contract as train.py).
+        pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
+        snr_gamma = float(self.cfg["training"].get("min_snr_gamma", 0.0))
+        if snr_gamma > 0.0:
+            w = min_snr_weight(
+                t, self.coord_ddpm.alpha_bars,
+                batch=batch_data.batch, gamma=snr_gamma,
+            )
+            pos_loss = (w * pos_loss_raw).mean()
+        else:
+            pos_loss = pos_loss_raw.mean()
         type_loss = F.cross_entropy(type_logits, z_idx)
         loss = pos_loss + lambda_type * type_loss
 

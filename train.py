@@ -26,6 +26,7 @@ from src.fed.trainer import TYPE_TO_Z
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.objectives import diversity_regularizer, x0_valence_penalty
+from src.training_utils import EMA, build_warmup_cosine_scheduler, min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -165,7 +166,20 @@ def train_diffusion(
         weight_decay=train_cfg.get("weight_decay", 1e-5),
     )
     total_epochs = int(train_cfg["epochs"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs)
+    # Strategy 1.4: warmup+cosine when warmup_epochs > 0, else plain cosine.
+    scheduler = build_warmup_cosine_scheduler(
+        optimizer, total_epochs,
+        warmup_epochs=int(train_cfg.get("warmup_epochs", 0)),
+    )
+    if scheduler is None:
+        scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs)
+
+    # Tier 1 opt-ins (docs/recommendation.md)
+    ema_decay = float(train_cfg.get("ema_decay", 0.0))
+    ema = EMA(model, decay=ema_decay, warmup=int(train_cfg.get("ema_warmup_steps", 1000))) \
+        if ema_decay > 0.0 else None
+    snr_gamma = float(train_cfg.get("min_snr_gamma", 0.0))
+    aug_rot = float(train_cfg.get("rotation_augment_prob", 0.0))
 
     ckpt_dir = Path(ckpt_cfg["dir"])
     last_path = ckpt_dir / "last.pt"
@@ -208,6 +222,11 @@ def train_diffusion(
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
             if "scheduler_state_dict" in resume_state:
                 scheduler.load_state_dict(resume_state["scheduler_state_dict"])
+            if ema is not None and "ema_state_dict" in resume_state:
+                ema.load_state_dict(resume_state["ema_state_dict"])
+            elif ema is not None:
+                ema = EMA(model, decay=ema_decay,
+                          warmup=int(train_cfg.get("ema_warmup_steps", 1000)))
             best_val_loss = float(resume_state.get("best_val_loss", resume_state.get("val_loss", float("inf"))))
             epochs_no_improve = int(resume_state.get("epochs_no_improve", 0))
             start_epoch = int(resume_state.get("epoch", 0)) + 1
@@ -251,6 +270,10 @@ def train_diffusion(
                 device=device,
             )
 
+            # Strategy 1.5: random per-molecule SO(3) rotation augmentation.
+            if aug_rot > 0.0 and torch.rand(1).item() < aug_rot:
+                batch_data.pos = rotate_batch(batch_data.pos, batch_data.batch)
+
             # Coordinate diffusion
             noisy_pos, actual_noise = coord_ddpm.add_noise(
                 batch_data.pos, t, batch_data.batch,
@@ -270,8 +293,16 @@ def train_diffusion(
                 noisy_types, noisy_pos, edge_index, t, batch_data.batch,
             )
 
-            # Losses
-            pos_loss = F.mse_loss(noise_pred, actual_noise)
+            # Losses. Strategy 1.2: optional min-SNR-γ weighting on the
+            # coordinate loss focuses learning on low-noise timesteps where
+            # bond-length precision is decided.
+            pos_loss_raw = F.mse_loss(noise_pred, actual_noise, reduction="none").mean(dim=-1)
+            if snr_gamma > 0.0:
+                w = min_snr_weight(t, coord_ddpm.alpha_bars,
+                                   batch=batch_data.batch, gamma=snr_gamma)
+                pos_loss = (w * pos_loss_raw).mean()
+            else:
+                pos_loss = pos_loss_raw.mean()
             type_loss = F.cross_entropy(type_logits, batch_data.z.long())
             loss = pos_loss + lambda_type * type_loss
 
@@ -312,6 +343,8 @@ def train_diffusion(
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
+            if ema is not None:
+                ema.update(model)
             total_pos_loss += pos_loss.item()
             total_type_loss += type_loss.item()
 
@@ -374,6 +407,11 @@ def train_diffusion(
         )
 
         # ---- Checkpointing (update best/counter FIRST, then save last.pt once) ----
+        # Best-model tracking: with EMA enabled, validate/score the EMA weights
+        # (they are what generation will load); otherwise the raw model.
+        if ema is not None:
+            eval_model_backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            ema.copy_to(model)
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
@@ -383,6 +421,7 @@ def train_diffusion(
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
+                    "ema_state_dict": ema.state_dict() if ema is not None else None,
                     "best_val_loss": best_val_loss,
                     "val_loss": best_val_loss,
                     "epochs_no_improve": epochs_no_improve,
@@ -396,6 +435,9 @@ def train_diffusion(
         else:
             epochs_no_improve += 1
 
+        if ema is not None:
+            model.load_state_dict(eval_model_backup)
+
         # last.pt every epoch = resume point (max 1 epoch lost on kill)
         save_checkpoint(
             {
@@ -403,6 +445,7 @@ def train_diffusion(
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
+                "ema_state_dict": ema.state_dict() if ema is not None else None,
                 "best_val_loss": best_val_loss,
                 "val_loss": avg_val_loss,
                 "epochs_no_improve": epochs_no_improve,
@@ -420,6 +463,7 @@ def train_diffusion(
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
+                    "ema_state_dict": ema.state_dict() if ema is not None else None,
                     "best_val_loss": best_val_loss,
                     "val_loss": avg_val_loss,
                     "epochs_no_improve": epochs_no_improve,

@@ -11,6 +11,11 @@ schedule (Nichol & Dhariwal, 2021) alongside the original linear one via the
 ``schedule`` constructor argument. The cosine schedule preserves more signal
 at intermediate timesteps, leaving the denoiser more "time budget" for the
 fine bond-length precision that validity requires.
+
+Strategy 1.6 (docs/recommendation.md): ``schedule="sigmoid"`` adds the
+sigmoid ᾱ schedule, which distributes noise even more evenly across the
+low-noise end than cosine — molecular coordinates live in a narrow ~5 Å box,
+not the 0-255 pixel range the cosine schedule was tuned for.
 """
 
 from __future__ import annotations
@@ -50,6 +55,30 @@ def _cosine_betas(
     return alpha_bars[:-1].float(), betas.clamp(1e-5, 0.999).float()
 
 
+def _sigmoid_betas(
+    num_steps: int,
+    start: float = -3.0,
+    end: float = 3.0,
+    scale: float = 0.02,
+    device: torch.device = torch.device("cpu"),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sigmoid-schedule betas (Strategy 1.6, docs/recommendation.md).
+
+    Raw betas ``sigmoid(linspace(start, end))`` are min-max normalized and
+    scaled to ``[1e-4, 1e-4 + scale]``. Sigmoid ᾱ decays fastest in the
+    mid-schedule and flattens at both ends — more low-noise steps survive
+    than under cosine, matching the narrow dynamic range of coordinates.
+    Returns ``(alpha_bars, betas)`` like :func:`_cosine_betas`.
+    """
+    t = torch.linspace(start, end, num_steps, dtype=torch.float64, device=device)
+    raw = torch.sigmoid(t)
+    betas = (raw - raw.min()) / (raw.max() - raw.min())
+    betas = betas * scale + 1e-4
+    alphas = 1.0 - betas
+    alpha_bars = torch.cumprod(alphas, dim=0)
+    return alpha_bars.float(), betas.float()
+
+
 def _build_schedule(
     num_steps: int,
     beta_start: float,
@@ -57,10 +86,11 @@ def _build_schedule(
     schedule: str,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return ``(betas, alphas, alpha_bars)`` for ``"linear"`` or ``"cosine"``.
+    """Return ``(betas, alphas, alpha_bars)`` for the requested schedule.
 
+    Supported: ``"linear"``, ``"cosine"``, ``"sigmoid"``.
     ``beta_start``/``beta_end`` parameterize the linear schedule and are
-    ignored (kept for config compatibility) when ``schedule="cosine"``.
+    ignored (kept for config compatibility) by the other two.
     """
     if schedule == "linear":
         betas = torch.linspace(beta_start, beta_end, num_steps, device=device)
@@ -69,10 +99,13 @@ def _build_schedule(
     elif schedule == "cosine":
         alpha_bars, betas = _cosine_betas(num_steps, device=device)
         alphas = 1.0 - betas
+    elif schedule == "sigmoid":
+        alpha_bars, betas = _sigmoid_betas(num_steps, device=device)
+        alphas = 1.0 - betas
     else:
         raise ValueError(
             f"Unknown diffusion schedule={schedule!r} "
-            f"(expected 'linear' or 'cosine')"
+            f"(expected 'linear', 'cosine' or 'sigmoid')"
         )
     return betas, alphas, alpha_bars
 

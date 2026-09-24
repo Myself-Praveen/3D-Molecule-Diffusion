@@ -25,10 +25,36 @@ from src.dataset import load_qm9
 from src.fed.trainer import TYPE_TO_Z
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
-from src.objectives import diversity_regularizer, x0_valence_penalty
+from src.objectives import diversity_regularizer, full_pair_index, x0_valence_penalty
 from src.training_utils import EMA, build_warmup_cosine_scheduler, min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
 from torch_geometric.loader import DataLoader as PyGDataLoader
+
+
+def _bond_pair_labels(
+    pair_index: torch.Tensor,
+    true_edge_index: torch.Tensor,
+    batch: torch.Tensor,
+) -> torch.Tensor:
+    """Binary bond labels (1 = bonded, 0 = none) for candidate pairs.
+
+    Tier 2.2 supervision: QM9 stores connectivity in ``data.edge_index``
+    (undirected duplicates included). A candidate pair (i, j) is positive
+    iff that edge appears in the ground truth. Distances at ``noisy_pos``
+    decide nothing here — labels are graph-structural.
+    """
+    true = set()
+    ei = true_edge_index.tolist()
+    for a, b in zip(ei[0], ei[1]):
+        true.add((a, b))
+        true.add((b, a))
+    rows = pair_index[0].tolist()
+    cols = pair_index[1].tolist()
+    labels = torch.tensor(
+        [1 if (a, b) in true else 0 for a, b in zip(rows, cols)],
+        dtype=torch.long, device=pair_index.device,
+    )
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +184,10 @@ def train_diffusion(
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
         use_attention=model_cfg.get("use_attention", False),
+        # Tier 2 (docs/recommendation.md) opt-ins — default off everywhere.
+        self_condition=model_cfg.get("self_condition", False),
+        coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
+        knn_schedule=model_cfg.get("knn_schedule") or None,
     ).to(device)
 
     optimizer = Adam(
@@ -180,6 +210,9 @@ def train_diffusion(
         if ema_decay > 0.0 else None
     snr_gamma = float(train_cfg.get("min_snr_gamma", 0.0))
     aug_rot = float(train_cfg.get("rotation_augment_prob", 0.0))
+    # Tier 2 opt-ins
+    sc_dropout = float(train_cfg.get("self_cond_dropout", 0.5))  # Chen et al. 50%
+    use_multiscale = model.knn_schedule is not None
 
     ckpt_dir = Path(ckpt_cfg["dir"])
     last_path = ckpt_dir / "last.pt"
@@ -187,6 +220,9 @@ def train_diffusion(
     lambda_type = train_cfg.get("type_loss_weight", 0.5)
     lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
     lambda_diversity = float(train_cfg.get("diversity_loss_weight", 0.0))
+    # Tier 2.2: bond-head supervision weight (0 = off; heads then stay at
+    # init and eval keeps inferring bonds from distances as before).
+    lambda_bond = float(train_cfg.get("bond_loss_weight", 0.0))
     # 0 = off (legacy behavior). >0 clips global grad norm each step — needed for
     # escalated-capacity models where a rare pathological batch can explode grads
     # and NaN-poison the weights (observed at 128-dim/6-layer, absent at 64/4).
@@ -201,8 +237,10 @@ def train_diffusion(
         if last_path.exists():
             print(f"Resuming from {last_path}")
             resume_state = torch.load(last_path, map_location=device, weights_only=False)
-            # Config-mismatch guard: model arch must match
-            for k in ("num_types", "node_dim", "edge_dim", "num_layers", "time_dim"):
+            # Config-mismatch guard: model arch must match (Tier 2 flags
+            # change the parameter set, so they are guarded too).
+            for k in ("num_types", "node_dim", "edge_dim", "num_layers", "time_dim",
+                      "self_condition", "coord_refine_layers", "knn_schedule"):
                 if resume_state.get("config", {}).get("model", {}).get(k) != model_cfg.get(k):
                     raise ValueError(
                         f"Resume config mismatch for model.{k}: "
@@ -289,8 +327,30 @@ def train_diffusion(
 
             edge_index = build_knn_graph(noisy_pos, batch_data.batch, k=train_cfg["kNN"])
 
+            # Tier 2.3: one kNN graph per layer from the kNN schedule.
+            edge_index_per_layer = None
+            if use_multiscale:
+                edge_index_per_layer = [
+                    build_knn_graph(noisy_pos, batch_data.batch, k=k_layer)
+                    for k_layer in model.knn_schedule
+                ]
+
+            # Tier 2.1: self-conditioning — 50% of steps feed the previous
+            # x0 estimate (here approximated with the current noise level:
+            # the first prediction of a step sees the *noisy* geometry),
+            # the rest see None, exactly like the Analog Bits schedule.
+            x0_estimate = None
+            if model.self_condition and torch.rand(1).item() >= sc_dropout:
+                ab = coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
+                x0_estimate = (
+                    noisy_pos
+                    - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
+                ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
+
             noise_pred, type_logits, node_h = model(
                 noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                x0_estimate=x0_estimate,
+                edge_index_per_layer=edge_index_per_layer,
             )
 
             # Losses. Strategy 1.2: optional min-SNR-γ weighting on the
@@ -305,6 +365,31 @@ def train_diffusion(
                 pos_loss = pos_loss_raw.mean()
             type_loss = F.cross_entropy(type_logits, batch_data.z.long())
             loss = pos_loss + lambda_type * type_loss
+
+            # Tier 2.2: bond-head supervision against QM9 ground-truth bonds
+            # (data.edge_index). Low-noise gated (t < valence_tau): at high
+            # noise the head would only learn to predict "no bond", since
+            # x0 is meaningless there. node_h is detached — the bond head is
+            # an auxiliary classifier; back-propagating it into the denoiser
+            # trunk would fight the diffusion objective.
+            if lambda_bond > 0.0 and bool((t < int(train_cfg.get("valence_tau", 200))).any()):
+                pair_index = full_pair_index(batch_data.batch)
+                if pair_index.numel() > 0:
+                    bond_logits = model.predict_bond_logits(
+                        node_h.detach(), noisy_pos, pair_index)
+                    bond_targets = _bond_pair_labels(
+                        pair_index, batch_data.edge_index, batch_data.batch)
+                    # Per-PAIR gate: a pair is in the loss iff BOTH its atoms
+                    # belong to a low-noise (t < tau) molecule.
+                    gate_pair = (
+                        (t < int(train_cfg.get("valence_tau", 200)))[batch_data.batch]
+                    )[pair_index[0]] & (
+                        (t < int(train_cfg.get("valence_tau", 200)))[batch_data.batch]
+                    )[pair_index[1]]
+                    if bool(gate_pair.any()):
+                        bond_loss = F.cross_entropy(
+                            bond_logits[gate_pair], bond_targets[gate_pair])
+                        loss = loss + lambda_bond * bond_loss
 
             # λ₂ validity pressure evaluated on the denoised x0 prediction
             # (low-noise gated) so geometry — not types — absorbs it.

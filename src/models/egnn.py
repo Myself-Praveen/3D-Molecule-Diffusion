@@ -122,12 +122,35 @@ class EquivariantGenerator(nn.Module):
         cond_dim: int = 0,
         num_cond_classes: int = 2,
         use_attention: bool = False,
+        self_condition: bool = False,
+        coord_refine_layers: int = 0,
+        knn_schedule: list[int] | None = None,
     ) -> None:
         super().__init__()
         self.num_types = num_types
         self.time_dim = time_dim
         self.cond_dim = cond_dim
         self.num_cond_classes = num_cond_classes
+        # Tier 2.1 (docs/recommendation.md): self-conditioning — feed the
+        # previous step's x0 estimate back as an extra per-atom feature.
+        self.self_condition = bool(self_condition)
+        if self.self_condition:
+            self.x0_proj = nn.Linear(3, node_dim)
+        # Tier 2.4: lightweight post-hoc coordinate refinement EGNN over the
+        # predicted clean coordinates x0. 0 = off (legacy behavior).
+        self.coord_refine_layers = int(coord_refine_layers)
+        if self.coord_refine_layers > 0:
+            self.refine_layers = nn.ModuleList(
+                [
+                    EGNNLayer(node_dim, edge_dim, time_dim,
+                              use_attention=use_attention)
+                    for _ in range(self.coord_refine_layers)
+                ]
+            )
+        # Tier 2.3: per-layer kNN schedule for multi-scale message passing
+        # (e.g. [4, 4, 8, 8, 16]). Empty/None = the caller's fixed graph is
+        # reused for every layer (legacy behavior).
+        self.knn_schedule = list(knn_schedule) if knn_schedule else None
         self.embed = nn.Embedding(num_types, node_dim)
         self.time_proj = nn.Sequential(
             nn.Linear(time_dim, time_dim),
@@ -192,16 +215,34 @@ class EquivariantGenerator(nn.Module):
         t: torch.Tensor,
         batch: torch.Tensor | None = None,
         cond: dict[str, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run message passing; returns (final atom embeddings, updated pos)."""
+        x0_estimate: torch.Tensor | None = None,
+        edge_index_per_layer: list[torch.Tensor] | None = None,
+        return_t_emb: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run message passing; returns (final atom embeddings, updated pos).
+
+        ``x0_estimate``: Tier 2.1 self-conditioning input — the previous
+        denoising step's clean-coordinate estimate, projected and added to
+        the atom features. ``None`` (training with dropout, or feature off)
+        is the plain path.
+
+        ``edge_index_per_layer``: Tier 2.3 multi-scale graphs — one kNN graph
+        per layer. ``None`` reuses ``edge_index`` for every layer.
+        """
         if batch is None:
             batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
         t_emb = timestep_embedding(t, self.time_dim)
         t_emb = self._cond_embedding(self.time_proj(t_emb), cond)[batch]
         h = self.embed(z.long())
-        for layer in self.layers:
-            h, pos = layer(h, pos, edge_index, t_emb)
-        return h, pos
+        if self.self_condition and x0_estimate is not None:
+            h = h + self.x0_proj(x0_estimate)
+        for i, layer in enumerate(self.layers):
+            ei = (
+                edge_index_per_layer[i]
+                if edge_index_per_layer is not None else edge_index
+            )
+            h, pos = layer(h, pos, ei, t_emb)
+        return (h, pos, t_emb) if return_t_emb else (h, pos)
 
     def forward(
         self,
@@ -211,6 +252,8 @@ class EquivariantGenerator(nn.Module):
         t: torch.Tensor,
         batch: torch.Tensor | None = None,
         cond: dict[str, torch.Tensor] | None = None,
+        x0_estimate: torch.Tensor | None = None,
+        edge_index_per_layer: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if batch is None:
             batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
@@ -218,8 +261,26 @@ class EquivariantGenerator(nn.Module):
         # and noise_pred collapses to exactly 0 with no gradient path
         # (the pre-Phase-2 coordinate head never learned).
         initial_pos = pos.clone()
-        h, updated_pos = self.encode(z, pos, edge_index, t, batch, cond=cond)
+        h, updated_pos, t_emb = self.encode(
+            z, pos, edge_index, t, batch, cond=cond,
+            x0_estimate=x0_estimate,
+            edge_index_per_layer=edge_index_per_layer,
+            return_t_emb=True,
+        )
         noise_pred = updated_pos - initial_pos
+        # Tier 2.4: refine the predicted clean coordinates with a lightweight
+        # second EGNN pass before converting back to noise space. The refine
+        # layers are zero-initialized (via EGNNLayer), so at init the
+        # refinement is the identity — safe to bolt onto any training run.
+        if self.coord_refine_layers > 0:
+            r_pos = initial_pos + noise_pred
+            ei_last = (
+                edge_index_per_layer[-1]
+                if edge_index_per_layer is not None else edge_index
+            )
+            for layer in self.refine_layers:
+                h_r, r_pos = layer(h, r_pos, ei_last, t_emb)
+            noise_pred = r_pos - initial_pos
         return noise_pred, self.type_head(h), h
 
     def predict_bond_logits(

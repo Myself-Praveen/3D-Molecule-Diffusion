@@ -197,8 +197,30 @@ class LocalTrainer:
         edge_index = build_knn_graph(
             noisy_pos, batch_data.batch, k=self.cfg["training"]["kNN"],
         )
+        # Tier 2.3: per-layer graphs when the model carries a kNN schedule.
+        edge_index_per_layer = None
+        if getattr(self.model, "knn_schedule", None):
+            edge_index_per_layer = [
+                build_knn_graph(noisy_pos, batch_data.batch, k=k_layer)
+                for k_layer in self.model.knn_schedule
+            ]
+        # Tier 2.1: self-conditioning with 50% dropout (training only).
+        x0_estimate = None
+        if (
+            getattr(self.model, "self_condition", False)
+            and optimizer is not None
+            and torch.rand(1).item() >= float(
+                self.cfg["training"].get("self_cond_dropout", 0.5))
+        ):
+            ab = self.coord_ddpm.alpha_bars.to(noisy_pos.device)[t][batch_data.batch]
+            x0_estimate = (
+                noisy_pos
+                - (1.0 - ab).sqrt().unsqueeze(-1) * torch.zeros_like(noisy_pos)
+            ) / ab.sqrt().unsqueeze(-1).clamp_min(1e-3)
         noise_pred, type_logits, node_h = self.model(
             noisy_types, noisy_pos, edge_index, t, batch_data.batch, cond=cond,
+            x0_estimate=x0_estimate,
+            edge_index_per_layer=edge_index_per_layer,
         )
 
         # Strategy 1.2: optional min-SNR-γ timestep weighting on the
@@ -362,6 +384,10 @@ def init_model_from_state(
         cond_dim=int(model_cfg.get("cond_dim", 0)),
         num_cond_classes=int(model_cfg.get("num_cond_classes", 2)),
         use_attention=bool(model_cfg.get("use_attention", False)),
+        # Tier 2 flags — default off, matching train.py's construction.
+        self_condition=bool(model_cfg.get("self_condition", False)),
+        coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
+        knn_schedule=model_cfg.get("knn_schedule") or None,
     ).to(device)
     if state is not None:
         model.load_state_dict(state)

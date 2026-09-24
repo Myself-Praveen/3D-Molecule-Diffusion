@@ -126,6 +126,10 @@ def main() -> None:
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
         use_attention=model_cfg.get("use_attention", False),
+        # Tier 2 flags must mirror training to load Tier 2 checkpoints.
+        self_condition=model_cfg.get("self_condition", False),
+        coord_refine_layers=int(model_cfg.get("coord_refine_layers", 0)),
+        knn_schedule=model_cfg.get("knn_schedule") or None,
     ).to(device)
     model.load_state_dict(_load_model_weights(ckpt, model))
 

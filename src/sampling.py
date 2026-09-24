@@ -59,6 +59,7 @@ def sample_molecules(
     cond: dict[str, torch.Tensor] | None = None,
     guidance_scale: float = 0.0,
     step_schedule: str = "linear",
+    use_self_conditioning: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -83,6 +84,9 @@ def sample_molecules(
         step_schedule: DDIM grid spacing — ``"linear"`` (evenly spaced,
             backward compatible) or ``"quadratic"`` (denser at low noise
             where bond-length precision is decided; no retraining needed).
+        use_self_conditioning: Tier 2.1 — feed the previous step's x0
+            estimate back into the model. ``None`` (default) auto-detects:
+            on iff the model was trained with ``self_condition=True``.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -114,19 +118,44 @@ def sample_molecules(
     def clamp_x0(x0: torch.Tensor) -> torch.Tensor:
         return x0.clamp(-x0_clamp, x0_clamp)
 
+    # Tier 2.1: auto-enable self-conditioning for models trained with it.
+    self_cond = (
+        bool(getattr(model, "self_condition", False))
+        if use_self_conditioning is None
+        else bool(use_self_conditioning) and bool(getattr(model, "self_condition", False))
+    )
+    x0_estimate = None
+
+    # Tier 2.3: per-layer kNN graphs when the model carries a schedule.
+    knn_schedule = getattr(model, "knn_schedule", None)
+
     for step_idx, t_cur in enumerate(timestep_iter):
         t = torch.full((num_graphs,), t_cur, dtype=torch.long, device=device)
         edge_index = build_knn_graph(pos, batch, k=4)
 
+        edge_index_per_layer = None
+        if knn_schedule:
+            edge_index_per_layer = [
+                build_knn_graph(pos, batch, k=k_layer) for k_layer in knn_schedule
+            ]
+
         if guidance_scale > 0.0 and cond is not None:
             # Classifier-free guidance (Ho & Salimans, 2022):
             # eps_guided = eps_uncond + w * (eps_cond - eps_uncond)
-            noise_c, logits_c, _ = model(z, pos, edge_index, t, batch, cond=cond)
-            noise_u, logits_u, _ = model(z, pos, edge_index, t, batch, cond=None)
+            noise_c, logits_c, _ = model(
+                z, pos, edge_index, t, batch, cond=cond,
+                x0_estimate=x0_estimate, edge_index_per_layer=edge_index_per_layer)
+            noise_u, logits_u, _ = model(
+                z, pos, edge_index, t, batch, cond=None,
+                x0_estimate=x0_estimate, edge_index_per_layer=edge_index_per_layer)
             noise_pred = noise_u + guidance_scale * (noise_c - noise_u)
             type_logits = logits_u + guidance_scale * (logits_c - logits_u)
         else:
-            noise_pred, type_logits, _ = model(z, pos, edge_index, t, batch, cond=cond)
+            noise_pred, type_logits, _ = model(
+                z, pos, edge_index, t, batch, cond=cond,
+                x0_estimate=x0_estimate,
+                edge_index_per_layer=edge_index_per_layer,
+            )
 
         # Numerical guard: a confident model emits large logits whose softmax
         # saturates; clamping keeps the categorical posterior finite.
@@ -138,6 +167,10 @@ def sample_molecules(
         x0_pred = clamp_x0(
             (pos - (1.0 - alpha_bar_t).sqrt() * noise_pred) / alpha_bar_t.sqrt()
         )
+        # Tier 2.1: the refined x0 becomes the next step's self-conditioning
+        # input (Analog Bits iteration refinement).
+        if self_cond:
+            x0_estimate = x0_pred
         if ddim_steps is None:
             # Ancestral DDPM step in x0-prediction form (Ho et al., 2020):
             # mu = c1*x0 + c2*x_t with c1+c2 coefficients from the posterior.

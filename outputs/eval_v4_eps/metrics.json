@@ -1,0 +1,44 @@
+{
+  "metrics": {
+    "Validity": 55.00000000000001,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8905306958709123,
+    "QED": 0.4944409409403521,
+    "LogP": 0.3807580545454545,
+    "SNN": 0.19050399190570386,
+    "BBB%": -1.0,
+    "ScaffDiv": 0.4090909090909091,
+    "ScaffCov": 0.015772870662460567,
+    "Lipinski%": 100.0,
+    "Veber%": 100.0,
+    "CNS_MPO": 3.2702903636363634
+  },
+  "latex_row": "55.0000  & 100.0000  & 100.0000  & 0.8905  & 0.4944  & 0.3808  & 0.1905 \\\\",
+  "num_valid": 550,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "checkpoints/central_v4_eps/best.pt",
+    "num_samples": 1000,
+    "ddim_steps": 200,
+    "eta": 0.5,
+    "seed": 42,
+    "step_schedule": "quadratic",
+    "relax": true
+  },
+  "metrics_relaxed": {
+    "Validity": 55.00000000000001,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8905306958709123,
+    "QED": 0.4944409409403521,
+    "LogP": 0.3807580545454545,
+    "SNN": 0.19050399190570386,
+    "BBB%": -1.0,
+    "ScaffDiv": 0.4090909090909091,
+    "ScaffCov": 0.015772870662460567,
+    "Lipinski%": 100.0,
+    "Veber%": 100.0,
+    "CNS_MPO": 3.2702903636363634
+  }
+}

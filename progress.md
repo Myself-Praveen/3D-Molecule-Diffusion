@@ -118,6 +118,17 @@ All of `docs/recommendation.md`'s actionable strategies implemented as opt-ins (
 
 **Next experiment:** retrain V3 with the winning opt-ins (EMA + min-SNR-γ + warmup-cosine + Tier 2 features + bond head) and re-run the Tier 0 eval sweeps (quadratic DDIM, η sweep, 500–1000 steps, tolerance matrix + min_fragment_atoms eval); or train fresh with `diffusion.objective: flow` for a direct paradigm comparison.
 
+## 13.6 V4 Retrain — Both Arms (In Progress)
+
+The "next experiment" above, launched (`a6fef55`). Two configs identical except the prediction objective (user decision: both, sequential; 400 epochs, patience 60):
+- `configs/central_v4_eps.yaml` — V3 recipe (256/8, attention, cosine, kNN 8, lr 2e-4, grad-clip 5) + EMA 0.9999, min-SNR γ=5, warmup 10, rotation 0.5, self-conditioning, bond head 0.1, kNN schedule [4,4,8,8,12,12,16,16], refine 2. Checkpoints `checkpoints/central_v4_eps/`, log `logs/central_v4_eps.log`.
+- `configs/central_v4_flow.yaml` — same everything, `objective: flow`, min-SNR 0 (inapplicable). Runs chained after eps via one `setsid bash -c` wrapper (pid `logs/central_v4.chain.pid`).
+- **Smoke-gate before launch:** 2-epoch full-scale runs of both exact configs (60 molecules) + 20-step sampling of both checkpoints. This caught a real sampler landmine: a barely-trained eps model returns huge noise predictions when the high-noise self-conditioning input (x̂₀ structurally clamped at ±10) is OOD, and the trajectory then NaN-poisons two steps later → silent 0% validity. Fixed by a predict-zero substitution on non-finite predictions in both sampler paths (`2827c3a`, same philosophy as the type-posterior guard). Also: `train.py` must run with `python -u` when backgrounded — the first launch died silently with an unflushed log.
+- **eps arm DONE:** early stop at epoch 177/400 (best val 0.8252 ≈ epoch 117; test 0.8506). NOTE: val is NOT comparable to V3's 0.6252 — min-SNR reweights the uniform-t val MSE by design, and self-conditioning trains with richer inputs than val passes. `quick_valid` probes band 0–56% (16-sample DDIM-20, noisy; peak 56.2% at epoch 120, adjacent to best-val 117). Full Table I eval in `outputs/eval_v4_eps/` (+ `outputs/eval_v4_eps_prune2/` with `--min_fragment_atoms 2`).
+- **eps arm RESULTS (1000 samples, DDIM-200/η0.5/quadratic/relax — identical V3 protocol):** Validity **55.0% raw → 56.0% with fragment pruning** (vs V3 62.2% — a 6–7 pt REGRESSION on the headline metric), but every secondary metric jumped: IntDiv_p 0.789→**0.891** (target >0.85 MET), QED 0.438→**0.494** (≈0.5 target), ScaffDiv 0.031→**0.409** (13×, target 0.1 blown past), SNN 0.143→0.191, CNS_MPO 3.13→3.27, Uniq/Novel 100%. Reading: the Tier 1+2 stack (rotation augment + diversity-side pressure + multi-scale kNN + SC) bought a much better diversity/quality profile at the cost of geometric precision — the validity bottleneck the doc warns is hardest. The +1 pt from pruning shows ~all remaining invalids are genuine geometry/chemistry misses, not fragment soup. Candidate causes to test: min-SNR changing the effective objective, SC train/eval input mismatch, η=0.5 suboptimal for the new model (doc §0.3 sweep pending), checkpoint selection under the reweighted val. Flow-arm comparison pending.
+- **flow arm:** training (pid in `logs/`, log `logs/central_v4_flow.log`); velocity losses at expected scale (train ~2.3, val ~3.3 at epoch 8).
+- **Eval protocol reminder (flow arm):** `--ddim_steps 200` is the Euler grid size for the ODE path; `--eta` and `--step_schedule` are DDIM-only concepts and are ignored under flow.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -134,6 +145,9 @@ All of `docs/recommendation.md`'s actionable strategies implemented as opt-ins (
 - `dad20cc` Tier 1 training enhancements: EMA, min-SNR-gamma weighting, rotation augment, warmup-cosine LR, sigmoid schedule
 - `0320004` Tier 2 architecture: self-conditioning, bond-head supervision, multi-scale kNN, coordinate refinement head
 - `d49df80` Tier 3: flow matching objective and ODE sampler with DDPM fallback
+- `2827c3a` Harden samplers: substitute predict-zero on non-finite predictions mid-trajectory
+- `dfd6296` Per-pair bond tolerance matrix, fragment pruning, type temperature, QED filter, implementation-status appendix
+- `a6fef55` Add V4 retrain configs: V3 recipe + Tier 1+2 opt-ins, eps and flow arms
 
 ## 15. What's Next
 

@@ -1,0 +1,70 @@
+# V4 flow-matching arm — IDENTICAL to configs/central_v4_eps.yaml except:
+#   - diffusion.objective: flow (Tier 3.2 velocity prediction, linear OT path)
+#   - min_snr_gamma: 0.0 (SNR weighting is defined over the DDPM schedule and
+#     is mathematically inapplicable to the flow objective — train.py warns
+#     and ignores it; set to 0 to keep the configs otherwise byte-identical)
+# Purpose: clean paradigm A/B vs the eps arm under the same seed/data split.
+# Resume: --resume --run_epochs N. Sampling auto-detects the ODE sampler from
+#   model.objective; for eval use --ddim_steps 200 --relax (the ODE path takes
+#   ddim_steps as its Euler grid size; step_schedule is a DDIM-only concept).
+
+seed: 42
+
+data:
+  root: data
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  use_attention: true
+  self_condition: true
+  coord_refine_layers: 2
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine
+  beta_start: 1.0e-4
+  beta_end: 0.02
+  objective: flow             # Tier 3.2: velocity prediction v = eps - x0
+
+training:
+  epochs: 400
+  batch_size: 16
+  lr: 2.0e-4
+  warmup_epochs: 10
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 8
+  type_loss_weight: 0.5
+  valence_loss_weight: 0.0
+  diversity_loss_weight: 0.0
+  patience: 60
+  ema_decay: 0.9999
+  ema_warmup_steps: 1000
+  min_snr_gamma: 0.0          # inapplicable under flow (see header)
+  rotation_augment_prob: 0.5
+  bond_loss_weight: 0.1
+  valence_tau: 200
+
+generation:
+  eval_every: 10
+  num_samples: 16
+  ddim_steps: 20
+
+eval:
+  num_samples: 1000
+  ddim_steps: 200
+  eta: 0.5
+  batch_size: 50
+  seed: 42
+
+checkpoint:
+  dir: checkpoints/central_v4_flow
+  save_every: 10

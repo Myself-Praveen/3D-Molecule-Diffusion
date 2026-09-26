@@ -1,0 +1,78 @@
+# V4 = V3 recipe + recommendation.md winning opt-ins (Tiers 1+2), eps objective.
+#   V3 base: 256-dim/8-layer EGNN, attention gates, cosine schedule, kNN 8,
+#   lr 2e-4, grad-clip 5, valence removed. V3 result: 62.2% validity
+#   (early-stopped epoch 169/200, patience 40).
+#   Tier 1 adds: EMA (1.1), min-SNR-gamma (1.2), warmup+cosine LR (1.4),
+#   rotation augmentation (1.5). (1.3 = epochs 400 / patience 60; 1.6 sigmoid
+#   schedule NOT combined — cosine is the calibrated V3 baseline.)
+#   Tier 2 adds: self-conditioning (2.1, 50% train dropout), bond-head
+#   supervision vs QM9 edge_index (2.2), multi-scale kNN schedule (2.3),
+#   coordinate refinement head (2.4). All default-off features, explicitly on.
+#   Tier 3.2 flow matching runs separately in central_v4_flow.yaml (objectives
+#   are exclusive; min-SNR requires the eps objective).
+# Resume: --resume --run_epochs N. Eval: --ddim_steps 200 --eta 0.5 --relax
+#   --step_schedule quadratic (the adopted Table I operating point).
+
+seed: 42
+
+data:
+  root: data
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  use_attention: true
+  # Tier 2 (docs/recommendation.md) — mirror of the smoke-verified combo
+  self_condition: true        # 2.1
+  coord_refine_layers: 2      # 2.4 (zero-init: identity at init, safe to add)
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]  # 2.3 (doc §2.3 example)
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine
+  beta_start: 1.0e-4          # ignored under cosine, kept for compat
+  beta_end: 0.02
+  objective: eps              # DDPM noise prediction (default/fallback)
+
+training:
+  epochs: 400                 # Tier 1.3 extended (upper end; patience valves)
+  batch_size: 16
+  lr: 2.0e-4
+  warmup_epochs: 10           # Tier 1.4: doc §1.4 "5-10 epochs"
+  grad_clip_norm: 5.0         # required at escalated capacity (geo_esc lesson)
+  weight_decay: 1.0e-5
+  kNN: 8                      # legacy per-call graph (knn_schedule overrides per layer)
+  type_loss_weight: 0.5
+  valence_loss_weight: 0.0
+  diversity_loss_weight: 0.0
+  patience: 60                # valve for the extended schedule
+  # Tier 1 opt-ins (default-off keys)
+  ema_decay: 0.9999           # 1.1 (doc §1.1); ramped warmup in EMA impl
+  ema_warmup_steps: 1000      # ≈ first 2.5 epochs at ~409 steps/epoch
+  min_snr_gamma: 5.0          # 1.2 (doc §1.2 recommended γ=5)
+  rotation_augment_prob: 0.5  # 1.5 (half the batches rotated)
+  # Tier 2.2 bond-head supervision weight (vs QM9 ground-truth bonds)
+  bond_loss_weight: 0.1
+  valence_tau: 200            # low-noise gate shared by bond head + λ₂
+
+generation:
+  eval_every: 10
+  num_samples: 16
+  ddim_steps: 20
+
+eval:
+  num_samples: 1000
+  ddim_steps: 200
+  eta: 0.5
+  batch_size: 50
+  seed: 42
+
+checkpoint:
+  dir: checkpoints/central_v4_eps   # isolated: V3 owns central_v3
+  save_every: 10

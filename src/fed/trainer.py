@@ -69,6 +69,37 @@ def merge_global_personal(
     return merged
 
 
+def extract_cond(
+    cfg: dict[str, Any], batch_data, device: torch.device | str
+) -> dict[str, torch.Tensor] | None:
+    """Build the Phase 2 conditioning dict from a BBB batch (shared by the
+    federated trainer and ``train.py``'s centralized path).
+
+    Returns ``None`` when conditioning is disabled (QM9 unconditional
+    path). Missing attributes degrade gracefully to zeros so unconditional
+    configs never crash.
+    """
+    if not (cfg.get("conditioning") or {}).get("enabled", False):
+        return None
+    n_graphs = int(batch_data.num_graphs)
+
+    def _graph_attr(name: str) -> torch.Tensor:
+        attr = getattr(batch_data, name, None)
+        if attr is None:
+            return torch.zeros(n_graphs, 1, device=device)
+        return attr.to(device).reshape(n_graphs, -1)
+
+    labels = _graph_attr("y").reshape(-1)[:n_graphs]
+    if labels.numel() < n_graphs:
+        labels = torch.zeros(n_graphs, device=device)
+    props = torch.cat(
+        [_graph_attr(k) for k in ("qed", "logp", "tpsa", "mw")], dim=-1,
+    )
+    if props.shape != (n_graphs, 4):
+        props = torch.zeros(n_graphs, 4, device=device)
+    return {"label": labels.long(), "properties": props.float()}
+
+
 def proximal_term(
     model: torch.nn.Module, global_state: dict[str, torch.Tensor], mu: float
 ) -> torch.Tensor:
@@ -118,30 +149,10 @@ class LocalTrainer:
     def _extract_cond(self, batch_data) -> dict[str, torch.Tensor] | None:
         """Build the Phase 2 conditioning dict from a BBB batch.
 
-        Returns ``None`` when conditioning is disabled (QM9 unconditional
-        path). Missing attributes degrade gracefully to zeros so unconditional
-        configs never crash.
+        Thin wrapper around the module-level :func:`extract_cond` (shared
+        with ``train.py``'s centralized path).
         """
-        if not self.cfg.get("conditioning", {}).get("enabled", False):
-            return None
-        n_graphs = int(batch_data.num_graphs)
-        device = self.device
-
-        def _graph_attr(name: str) -> torch.Tensor:
-            attr = getattr(batch_data, name, None)
-            if attr is None:
-                return torch.zeros(n_graphs, 1, device=device)
-            return attr.to(device).reshape(n_graphs, -1)
-
-        labels = _graph_attr("y").reshape(-1)[:n_graphs]
-        if labels.numel() < n_graphs:
-            labels = torch.zeros(n_graphs, device=device)
-        props = torch.cat(
-            [_graph_attr(k) for k in ("qed", "logp", "tpsa", "mw")], dim=-1,
-        )
-        if props.shape != (n_graphs, 4):
-            props = torch.zeros(n_graphs, 4, device=device)
-        return {"label": labels.long(), "properties": props.float()}
+        return extract_cond(self.cfg, batch_data, self.device)
 
     def _type_indices(self, batch_data) -> torch.Tensor:
         """Atom-type indices for the model (identity: indices ARE atomic numbers).

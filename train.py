@@ -22,7 +22,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.dataset import load_qm9
-from src.fed.trainer import TYPE_TO_Z
+from src.fed.trainer import TYPE_TO_Z, extract_cond
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.models.flow import flow_interpolate
@@ -67,6 +67,28 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+_type_warned = False
+
+
+def sanitize_type_indices(z: torch.Tensor, num_types: int) -> torch.Tensor:
+    """Map exotic atomic numbers (Z >= num_types) to carbon — the central
+    mirror of src/fed/trainer.py ``_type_indices``, so BBB heavy atoms
+    (S/Cl/Br, Z >= 16) never crash one_hot / cross_entropy under
+    num_types=10 configs (Phase 6)."""
+    global _type_warned
+    exotic = z >= num_types
+    if bool(exotic.any()):
+        if not _type_warned:
+            print(
+                f"  ! mapping {int(exotic.sum())} exotic atoms "
+                f"(Z>={num_types}) to carbon; consider higher "
+                "model.num_types for full fidelity"
+            )
+            _type_warned = True
+        z = torch.where(exotic, torch.full_like(z, 6), z)
+    return z
 
 
 def save_checkpoint(state: dict, path: Path) -> None:
@@ -126,27 +148,53 @@ def train_diffusion(
     model_cfg = cfg["model"]
     diff_cfg = cfg["diffusion"]
     train_cfg = cfg["training"]
+    cond_dropout = float(
+        (cfg.get("conditioning") or {}).get("label_dropout", 0.1)
+    )
+    # Ablation no_3d: zero the z coordinate of every training/val input so
+    # the model learns the z=0 manifold (the sampler then denoises toward
+    # it because that is what the training distribution says).
+    flatten_z = bool(model_cfg.get("flatten_to_2d", False))
+    if flatten_z:
+        print("  ! flatten_to_2d: z-coordinate zeroed for train/val/test")
     ckpt_cfg = cfg["checkpoint"]
 
     # Data ------------------------------------------------------------------
-    full_dataset = load_qm9(root=data_cfg["root"])
-    # Optional subsampling for fast CPU smoke runs (mirrors fed_train.py).
-    # data.max_molecules: 0 or absent = use full QM9.
-    max_mols = int(data_cfg.get("max_molecules", 0))
-    if max_mols > 0 and max_mols < len(full_dataset):
-        g_sub = torch.Generator().manual_seed(cfg.get("seed", 42))
-        sub_idx = torch.randperm(len(full_dataset), generator=g_sub)[:max_mols].tolist()
-        full_dataset = torch.utils.data.Subset(full_dataset, sub_idx)
-    n = len(full_dataset)
-    n_train = int(n * data_cfg["train_frac"])
-    n_val = int(n * data_cfg["val_frac"])
-    n_test = n - n_train - n_val
+    # Dataset dispatch (Phase 6): qm9 loads and splits procedurally; bbbp /
+    # b3db ship scaffold splits built at load time (src/dataset_bbb.py).
+    dataset_name = str(data_cfg.get("dataset", "qm9")).lower()
+    if dataset_name == "bbbp":
+        from src.dataset_bbb import load_bbbp
 
-    train_ds, val_ds, test_ds = torch.utils.data.random_split(
-        full_dataset,
-        [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(cfg.get("seed", 42)),
-    )
+        train_ds, val_ds, test_ds = load_bbbp(root=data_cfg["root"])
+    elif dataset_name == "b3db":
+        from src.dataset_bbb import load_b3db
+
+        train_ds, val_ds, test_ds = load_b3db(root=data_cfg["root"])
+    elif dataset_name == "qm9":
+        full_dataset = load_qm9(root=data_cfg["root"])
+        # Optional subsampling for fast CPU smoke runs (mirrors fed_train.py).
+        # data.max_molecules: 0 or absent = use full QM9.
+        max_mols = int(data_cfg.get("max_molecules", 0))
+        if max_mols > 0 and max_mols < len(full_dataset):
+            g_sub = torch.Generator().manual_seed(cfg.get("seed", 42))
+            sub_idx = torch.randperm(len(full_dataset), generator=g_sub)[:max_mols].tolist()
+            full_dataset = torch.utils.data.Subset(full_dataset, sub_idx)
+        n = len(full_dataset)
+        n_train = int(n * data_cfg["train_frac"])
+        n_val = int(n * data_cfg["val_frac"])
+        n_test = n - n_train - n_val
+
+        train_ds, val_ds, test_ds = torch.utils.data.random_split(
+            full_dataset,
+            [n_train, n_val, n_test],
+            generator=torch.Generator().manual_seed(cfg.get("seed", 42)),
+        )
+    else:
+        raise ValueError(
+            f"Unknown data.dataset={dataset_name!r} "
+            "(expected 'qm9', 'bbbp' or 'b3db')"
+        )
 
     train_loader = PyGDataLoader(
         train_ds, batch_size=train_cfg["batch_size"], shuffle=True,
@@ -184,6 +232,9 @@ def train_diffusion(
         edge_dim=model_cfg["edge_dim"],
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
+        # Phase 2/6 conditioning: 0 = unconditional (default, QM9 configs).
+        cond_dim=int(model_cfg.get("cond_dim", 0)),
+        num_cond_classes=int(model_cfg.get("num_cond_classes", 2)),
         use_attention=model_cfg.get("use_attention", False),
         # Tier 2 (docs/recommendation.md) opt-ins — default off everywhere.
         self_condition=model_cfg.get("self_condition", False),
@@ -323,6 +374,16 @@ def train_diffusion(
             batch_data = batch_data.to(device)
             optimizer.zero_grad(set_to_none=True)
 
+            # Phase 6 conditioning: build the cond dict (None when the config
+            # is unconditional) and randomly drop it for classifier-free
+            # guidance training — same semantics as src/fed/trainer.py.
+            cond = extract_cond(cfg, batch_data, device)
+            if cond is not None and torch.rand(1).item() < cond_dropout:
+                cond = None
+            batch_data.z = sanitize_type_indices(
+                batch_data.z, model_cfg["num_types"]
+            )
+
             t = torch.randint(
                 0, coord_ddpm.num_steps,
                 (batch_data.num_graphs,),
@@ -332,6 +393,10 @@ def train_diffusion(
             # Strategy 1.5: random per-molecule SO(3) rotation augmentation.
             if aug_rot > 0.0 and torch.rand(1).item() < aug_rot:
                 batch_data.pos = rotate_batch(batch_data.pos, batch_data.batch)
+            if flatten_z:
+                # After rotation: SO(3) would lift a flattened plane back out.
+                batch_data.pos = batch_data.pos.clone()
+                batch_data.pos[..., 2] = 0.0
 
             # Coordinate corruption: DDPM noise (default) or Tier 3.2
             # flow-matching linear path per molecule. Flow ties u to the same
@@ -385,6 +450,7 @@ def train_diffusion(
 
             noise_pred, type_logits, node_h = model(
                 noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                cond=cond,
                 x0_estimate=x0_estimate,
                 edge_index_per_layer=edge_index_per_layer,
             )
@@ -489,6 +555,15 @@ def train_diffusion(
         with torch.no_grad():
             for batch_data in val_loader:
                 batch_data = batch_data.to(device)
+                # Val mirrors src/fed/trainer.py: conditioning is passed
+                # through (no label dropout outside training).
+                cond = extract_cond(cfg, batch_data, device)
+                batch_data.z = sanitize_type_indices(
+                    batch_data.z, model_cfg["num_types"]
+                )
+                if flatten_z:
+                    batch_data.pos = batch_data.pos.clone()
+                    batch_data.pos[..., 2] = 0.0
                 t = torch.randint(
                     0, coord_ddpm.num_steps,
                     (batch_data.num_graphs,),
@@ -506,6 +581,7 @@ def train_diffusion(
                         noisy_pos, batch_data.batch, k=train_cfg["kNN"])
                     v_pred, type_logits, _ = model(
                         noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                        cond=cond,
                     )
                     val_pos_loss += F.mse_loss(v_pred, v_target).item()
                 else:
@@ -520,6 +596,7 @@ def train_diffusion(
                         noisy_pos, batch_data.batch, k=train_cfg["kNN"])
                     noise_pred, type_logits, _ = model(
                         noisy_types, noisy_pos, edge_index, t, batch_data.batch,
+                        cond=cond,
                     )
                     val_pos_loss += F.mse_loss(noise_pred, actual_noise).item()
                 val_type_loss += F.cross_entropy(type_logits, batch_data.z.long()).item()
@@ -639,6 +716,12 @@ def train_diffusion(
     with torch.no_grad():
         for batch_data in test_loader:
             batch_data = batch_data.to(device)
+            batch_data.z = sanitize_type_indices(
+                batch_data.z, model_cfg["num_types"]
+            )
+            if flatten_z:
+                batch_data.pos = batch_data.pos.clone()
+                batch_data.pos[..., 2] = 0.0
             t = torch.randint(
                 0, coord_ddpm.num_steps,
                 (batch_data.num_graphs,),

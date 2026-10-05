@@ -127,6 +127,59 @@ def partition_niid(
     return partitions
 
 
+def partition_bbb_label(
+    dataset, num_clients: int, seed: int = 42
+) -> dict[int, list[int]]:
+    """Non-IID partitioning by BBB label (Phase 6, implementation.md §6.2).
+
+    Some clients get mostly BBB+ molecules, others mostly BBB-. This
+    simulates real pharmaceutical data silos where different companies keep
+    different chemical libraries (label-skew non-IID).
+
+    Implementation: read per-molecule ``data.y`` (0/1), shuffle within each
+    label, concatenate class-by-class, then cut into contiguous near-equal
+    chunks — early clients fill from the first class, late clients from the
+    second, so per-client label ratios skew hard in opposite directions.
+
+    Use via ``get_partition(mode="label_niid")``.
+    """
+    labels: list[int] = []
+    for i in range(len(dataset)):
+        y = getattr(dataset[i], "y", None)
+        if y is None:
+            raise ValueError(
+                "partition_bbb_label requires per-molecule data.y labels; "
+                f"item {i} has none (mode='label_niid' needs a BBB dataset)"
+            )
+        labels.append(int(torch.as_tensor(y).view(-1)[0]))
+    if labels and not set(labels) <= {0, 1}:
+        raise ValueError(
+            "partition_bbb_label expects binary BBB labels 0/1, got "
+            f"values {sorted(set(labels))[:5]}... — this dataset's data.y "
+            "is not a BBB label"
+        )
+
+    rng = random.Random(seed)
+    by_class: defaultdict[int, list[int]] = defaultdict(list)
+    for idx, label in enumerate(labels):
+        by_class[label].append(idx)
+    for indices in by_class.values():
+        rng.shuffle(indices)
+    ordered = [idx for label in sorted(by_class) for idx in by_class[label]]
+
+    n = len(ordered)
+    partitions: dict[int, list[int]] = {}
+    start = 0
+    for client_id in range(num_clients):
+        # Near-equal contiguous chunks; earlier clients absorb the remainder.
+        end = start + (n - start) // (num_clients - client_id)
+        chunk = ordered[start:end]
+        rng.shuffle(chunk)
+        partitions[client_id] = chunk
+        start = end
+    return partitions
+
+
 def save_partition(
     partitions: dict[int, list[int]], path: str | Path
 ) -> None:
@@ -153,9 +206,14 @@ def get_partition(
     seed: int = 42,
     cache_dir: str | Path = "data/partitions",
 ) -> tuple[dict[int, list[int]], list[str]]:
-    """Label, partition (or load cached), and persist in one call."""
+    """Label, partition (or load cached), and persist in one call.
+
+    The cache key includes ``len(dataset)`` so QM9 and BBBP partitions for
+    the same K/mode never collide (a stale QM9 cache would index far past
+    the end of a BBBP dataset).
+    """
     labels = label_dataset(dataset)
-    stem = f"K{num_clients}_{mode}"
+    stem = f"K{num_clients}_{mode}_n{len(dataset)}"
     cache_path = Path(cache_dir) / f"{stem}.json"
     if cache_path.exists():
         partitions = load_partition(cache_path)
@@ -164,6 +222,9 @@ def get_partition(
             partitions = partition_iid(labels, num_clients, seed)
         elif mode == "niid":
             partitions = partition_niid(labels, num_clients, seed)
+        elif mode == "label_niid":
+            # BBB-label skew needs per-molecule y, not the summary labels.
+            partitions = partition_bbb_label(dataset, num_clients, seed)
         else:
             raise ValueError(f"Unknown partition mode: {mode!r}")
         save_partition(partitions, cache_path)

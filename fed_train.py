@@ -59,7 +59,24 @@ def run_federated(
     print(f"Federated training on: {device}")
 
     # ---- Data & partitioning ---------------------------------------------
-    dataset = load_qm9(root=cfg["data"]["root"])
+    # Dataset dispatch (Phase 6): qm9 loads here and is partitioned below;
+    # bbbp / b3db ship scaffold splits from src/dataset_bbb.py.
+    dataset_name = str(cfg["data"].get("dataset", "qm9")).lower()
+    if dataset_name == "bbbp":
+        from src.dataset_bbb import load_bbbp
+
+        dataset, _, _ = load_bbbp(root=cfg["data"]["root"])
+    elif dataset_name == "b3db":
+        from src.dataset_bbb import load_b3db
+
+        dataset, _, _ = load_b3db(root=cfg["data"]["root"])
+    elif dataset_name == "qm9":
+        dataset = load_qm9(root=cfg["data"]["root"])
+    else:
+        raise ValueError(
+            f"Unknown data.dataset={dataset_name!r} "
+            "(expected 'qm9', 'bbbp' or 'b3db')"
+        )
     max_mols = int(cfg["data"].get("max_molecules", 0))
     indices = list(range(len(dataset)))
     if max_mols > 0:

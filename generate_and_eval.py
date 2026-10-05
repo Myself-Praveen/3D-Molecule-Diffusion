@@ -110,6 +110,13 @@ def main() -> None:
     parser.add_argument("--min_qed", type=float, default=0.0,
                         help="Rejection filter: replace molecules with QED below "
                              "this by invalid (0 = off; try 0.5 for drug-likeness)")
+    parser.add_argument("--guidance_scale", type=float, default=2.0,
+                        help="Classifier-free guidance strength w (Phase 6; "
+                             "ignored unless the checkpoint has conditioning "
+                             "enabled and --target_bbb is given)")
+    parser.add_argument("--target_bbb", type=int, default=1, choices=[0, 1],
+                        help="Target BBB class for guided generation: "
+                             "0=BBB-, 1=BBB+")
     args = parser.parse_args()
 
     # Config
@@ -135,6 +142,9 @@ def main() -> None:
         edge_dim=model_cfg["edge_dim"],
         num_layers=model_cfg["num_layers"],
         time_dim=model_cfg["time_dim"],
+        # Phase 6: must mirror training to load conditioned checkpoints.
+        cond_dim=int(model_cfg.get("cond_dim", 0)),
+        num_cond_classes=int(model_cfg.get("num_cond_classes", 2)),
         use_attention=model_cfg.get("use_attention", False),
         # Tier 2 flags must mirror training to load Tier 2 checkpoints.
         self_condition=model_cfg.get("self_condition", False),
@@ -166,8 +176,19 @@ def main() -> None:
         schedule=diff_cfg.get("schedule", "linear"),
     )
 
-    # Load training set for novelty / SNN baselines
-    full_dataset = load_qm9(root=ckpt_cfg["data"]["root"])
+    # Load training set for novelty / SNN baselines (Phase 6 dispatch:
+    # BBB datasets use their scaffold-split train portion).
+    data_name = str(ckpt_cfg["data"].get("dataset", "qm9")).lower()
+    if data_name == "bbbp":
+        from src.dataset_bbb import load_bbbp
+
+        full_dataset, _, _ = load_bbbp(root=ckpt_cfg["data"]["root"])
+    elif data_name == "b3db":
+        from src.dataset_bbb import load_b3db
+
+        full_dataset, _, _ = load_b3db(root=ckpt_cfg["data"]["root"])
+    else:
+        full_dataset = load_qm9(root=ckpt_cfg["data"]["root"])
     train_smiles: set[str] = set()
     train_mols: list[Chem.Mol] = []
     for data in full_dataset:
@@ -185,6 +206,12 @@ def main() -> None:
 
     all_mols: list[Chem.Mol | None] = []
     num_batches = (args.num_samples + args.batch_size - 1) // args.batch_size
+    cond_enabled = bool(
+        (ckpt_cfg.get("conditioning") or {}).get("enabled", False)
+    )
+    if cond_enabled:
+        print(f"Conditioning enabled — guiding toward BBB class "
+              f"{args.target_bbb} with w={args.guidance_scale}")
 
     for b_idx in range(num_batches):
         n_batch = min(args.batch_size, args.num_samples - b_idx * args.batch_size)
@@ -196,6 +223,12 @@ def main() -> None:
             f"({total_atoms} atoms)"
         )
 
+        # Phase 6: classifier-free guidance toward the target BBB class.
+        # Only active when the checkpoint was trained with conditioning.
+        cond = None
+        if cond_enabled:
+            cond = build_target_cond(args.target_bbb, n_batch, device)
+
         pos, z = sample_molecules(
             model, coord_ddpm, type_ddpm,
             torch.tensor(atom_counts, dtype=torch.long),
@@ -204,6 +237,8 @@ def main() -> None:
             eta=args.eta,
             step_schedule=args.step_schedule,
             type_temperature=args.type_temperature,
+            cond=cond,
+            guidance_scale=args.guidance_scale if cond is not None else 0.0,
         )
 
         # Convert each generated molecule to RDKit
@@ -278,6 +313,25 @@ def main() -> None:
             step_schedule=args.step_schedule, relax=args.relax,
             relaxed_mols=relaxed, relaxed_metrics=metrics_relaxed,
         )
+
+
+def build_target_cond(
+    target_bbb: int, num_graphs: int, device
+) -> dict[str, torch.Tensor]:
+    """Phase 6: conditioning dict for BBB-targeted generation.
+
+    ``label`` is the target class for every graph in the batch; ``properties``
+    are zeros = the z-scored training mean (an "average molecule"), so
+    guidance is driven by the class label rather than one specific molecule's
+    property profile.
+    """
+    if target_bbb not in (0, 1):
+        raise ValueError(f"target_bbb must be 0 or 1, got {target_bbb!r}")
+    return {
+        "label": torch.full((num_graphs,), int(target_bbb),
+                            dtype=torch.long, device=device),
+        "properties": torch.zeros(num_graphs, 4, device=device),
+    }
 
 
 def _save_eval_outputs(

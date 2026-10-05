@@ -632,6 +632,9 @@ def evaluate(
         "Lipinski%": lipinski_pass_rate(mols) * 100.0,
         "Veber%": veber_pass_rate(mols) * 100.0,
         "CNS_MPO": cns_mpo_score(mols),
+        # Fragment-aware honesty metrics (dashboard + sweep configs read
+        # these keys from metrics.json).
+        **connectivity(mols),
     }
 
 

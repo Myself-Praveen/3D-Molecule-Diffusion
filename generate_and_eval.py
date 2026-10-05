@@ -93,7 +93,7 @@ def main() -> None:
                         help="If given, save metrics.json, smiles.txt and "
                              "molecules.sdf there (created if needed)")
     parser.add_argument("--bbb_oracle", type=str, default=None,
-                        help="Path to trained BBB oracle (.pt); enables BBB% metric")
+                        help="Path to trained BBB oracle (.pt); enables BBB%% metric")
     parser.add_argument("--relax", action="store_true",
                         help="MMFF94/UFF-relax each valid molecule and report a second "
                              "(relaxed) metric table; raw table always reported too")
@@ -264,18 +264,35 @@ def main() -> None:
         print(f"QED filter (>= {args.min_qed:.2f}): dropped {n_qed_dropped} "
               f"of {n_qed_dropped + sum(m is not None for m in all_mols)} molecules")
 
-    # Evaluate
+    # Evaluate — BBB oracle resolution: explicit --bbb_oracle flag first,
+    # else the checkpoint config's bbb_classifier.checkpoint, else the
+    # --config YAML's. Sweep/ablation runners never pass the flag, so this
+    # keeps BBB% populated for configs that declare an oracle (Phase 5
+    # metric lists); a missing declared file warns instead of crashing.
+    oracle_path = args.bbb_oracle
+    if not oracle_path:
+        for source in (ckpt_cfg, cfg):
+            candidate = (source.get("bbb_classifier") or {}).get("checkpoint")
+            if candidate:
+                oracle_path = str(candidate)
+                break
     bbb_classifier = None
-    if args.bbb_oracle:
+    if oracle_path and not Path(oracle_path).exists():
+        if args.bbb_oracle:
+            raise FileNotFoundError(f"--bbb_oracle not found: {oracle_path}")
+        print(f"WARNING: config declares bbb_classifier.checkpoint="
+              f"{oracle_path} but it does not exist — BBB% disabled")
+        oracle_path = None
+    if oracle_path:
         from src.models.bbb_classifier import BBBClassifier
 
-        bbb_ckpt = torch.load(args.bbb_oracle, map_location=device,
+        bbb_ckpt = torch.load(oracle_path, map_location=device,
                               weights_only=False)
         bbb_classifier = BBBClassifier(
             hidden_dim=int(bbb_ckpt.get("hidden_dim", 128))).to(device)
         bbb_classifier.load_state_dict(bbb_ckpt["model_state_dict"])
         bbb_classifier.eval()
-        print(f"BBB oracle loaded from {args.bbb_oracle} "
+        print(f"BBB oracle loaded from {oracle_path} "
               f"(val AUROC {bbb_ckpt.get('val_auroc', float('nan')):.4f})")
     metrics = evaluate(all_mols, train_smiles, train_mols,
                        bbb_classifier=bbb_classifier)

@@ -59,7 +59,9 @@ def main() -> int:
     failures = 0
     for w in scales:
         run_dir = outdir / combo_slug({"guidance_scale": w})
-        run_dir.mkdir(parents=True, exist_ok=True)
+        if not args.dry_run:
+            # No filesystem side effects in dry-run (mirrors run_sweep.py).
+            run_dir.mkdir(parents=True, exist_ok=True)
         eval_dir = run_dir
         cmd = [
             python(), REPO_ROOT / "generate_and_eval.py",

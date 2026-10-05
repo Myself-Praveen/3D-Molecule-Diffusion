@@ -116,6 +116,13 @@ def main() -> int:
             native = "ConnectedValidity" in table
             result = connectivity_from_sdf(d / sdf_name, num_total)
             if result is None:
+                recorded_valid = round(float(table["Validity"]) / 100.0
+                                       * num_total)
+                if native and recorded_valid == 0:
+                    # Zero valid molecules -> no SDF is written and the
+                    # native keys are trivially all-zero; nothing to check.
+                    validated += 1
+                    continue
                 if native:
                     print(f"FAIL {d.name}/{table_key}: native keys but no "
                           f"{sdf_name}")

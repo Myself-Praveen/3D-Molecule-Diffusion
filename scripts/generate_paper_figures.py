@@ -124,7 +124,7 @@ def load_generated_sdf() -> list:
 
     for path in sorted(OUTPUTS.glob("eval_*/molecules.sdf")):
         try:
-            mols = [m for m in Chem.SDMolsupplier(str(path), removeHs=False)
+            mols = [m for m in Chem.SDMolSupplier(str(path), removeHs=False)
                     if m is not None]
         except Exception:
             continue

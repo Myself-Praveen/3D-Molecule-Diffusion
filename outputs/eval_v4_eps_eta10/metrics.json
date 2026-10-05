@@ -12,7 +12,10 @@
     "ScaffCov": 0.011041009463722398,
     "Lipinski%": 100.0,
     "Veber%": 100.0,
-    "CNS_MPO": 3.2328383333333335
+    "CNS_MPO": 3.2328383333333335,
+    "ConnectedValidity": 52.5,
+    "BondsPerMol": 18.116666666666667,
+    "ConnectedFrac": 87.5
   },
   "latex_row": "60.0000  & 100.0000  & 100.0000  & 0.8750  & 0.4924  & 0.6274  & 0.2032 \\\\",
   "num_valid": 120,
@@ -39,6 +42,9 @@
     "ScaffCov": 0.011041009463722398,
     "Lipinski%": 100.0,
     "Veber%": 100.0,
-    "CNS_MPO": 3.2328383333333335
+    "CNS_MPO": 3.2328383333333335,
+    "ConnectedValidity": 52.5,
+    "BondsPerMol": 18.116666666666667,
+    "ConnectedFrac": 87.5
   }
 }

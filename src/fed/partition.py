@@ -151,13 +151,14 @@ def partition_bbb_label(
                 "partition_bbb_label requires per-molecule data.y labels; "
                 f"item {i} has none (mode='label_niid' needs a BBB dataset)"
             )
-        labels.append(int(torch.as_tensor(y).view(-1)[0]))
-    if labels and not set(labels) <= {0, 1}:
-        raise ValueError(
-            "partition_bbb_label expects binary BBB labels 0/1, got "
-            f"values {sorted(set(labels))[:5]}... — this dataset's data.y "
-            "is not a BBB label"
-        )
+        raw = float(torch.as_tensor(y, dtype=torch.float32).view(-1)[0])
+        if raw not in (0.0, 1.0):
+            # Validate BEFORE int() truncation: 0.5 would silently become 0.
+            raise ValueError(
+                "partition_bbb_label expects binary BBB labels 0/1, got "
+                f"{raw!r} — this dataset's data.y is not a BBB label"
+            )
+        labels.append(int(raw))
 
     rng = random.Random(seed)
     by_class: defaultdict[int, list[int]] = defaultdict(list)

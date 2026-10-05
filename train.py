@@ -370,6 +370,7 @@ def train_diffusion(
         model.train()
         total_pos_loss = 0.0
         total_type_loss = 0.0
+        total_baseline = 0.0
         for batch_data in train_loader:
             batch_data = batch_data.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -408,10 +409,23 @@ def train_diffusion(
                 noisy_pos, v_target = flow_interpolate(
                     batch_data.pos, u, batch_data.batch,
                 )
+                # Trivial zero-velocity baseline for this batch (u-independent):
+                # E||eps_c - x0||^2 = (1 - 1/n_g) + ||x0||^2/3 per atom-dim.
+                # The historical constant baseline=1.0 is the eps objective's
+                # predict-zero loss and is meaningless for flow — triage showed
+                # it made a train_pos of 2.11 look "at the trivial predictor"
+                # when the real trivial loss is ~3.9 (scripts/flow_triage.py).
+                _g = batch_data.batch
+                _n_g = torch.bincount(_g).clamp_min(1).to(batch_data.pos.dtype)
+                batch_baseline = float(
+                    (1.0 - 1.0 / _n_g[_g]
+                     + batch_data.pos.square().sum(dim=-1) / 3.0).mean().item()
+                )
             else:
                 noisy_pos, actual_noise = coord_ddpm.add_noise(
                     batch_data.pos, t, batch_data.batch,
                 )
+                batch_baseline = 1.0  # E[||noise - 0||^2] for unit-variance noise
 
             # Atom-type diffusion (EDM-style categorical). batch= is required:
             # without it _atom_batch broadcasts one timestep per ATOM, so the
@@ -540,13 +554,16 @@ def train_diffusion(
                 ema.update(model)
             total_pos_loss += pos_loss.item()
             total_type_loss += type_loss.item()
+            total_baseline += batch_baseline
 
         scheduler.step()
         avg_pos_loss = total_pos_loss / len(train_loader)
         avg_type_loss = total_type_loss / len(train_loader)
 
-        # ---- Predict-zero baseline (MSE of 1.0 is expected for N(0,1) targets) ----
-        baseline_mse = 1.0  # constant: E[||noise - 0||^2] = 1 for unit-variance noise
+        # ---- Predict-zero baseline (per-objective trivial loss) ----
+        # eps: E[||noise - 0||^2] = 1 (constant). flow: E||eps_c - x0||^2,
+        # accumulated per batch above (the zero-velocity predictor's loss).
+        baseline_mse = total_baseline / max(len(train_loader), 1)
 
         # ---- Validate ----
         model.eval()

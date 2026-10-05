@@ -247,10 +247,11 @@ def main() -> None:
     print("\n--- RAW (as generated) ---")
     print_metrics(metrics)
 
-    # Print as table for easy copy-paste
+    # Print as table for easy copy-paste. Includes the Phase 4 BBB metrics
+    # (BBB%, ScaffDiv, ScaffCov, Lipinski%, Veber%, CNS_MPO) so Table I rows
+    # can be pasted straight from the eval log.
     print("\nLaTeX row:")
-    metric_keys = ["Validity", "Uniqueness", "Novelty",
-                   "IntDiv_p", "QED", "LogP", "SNN"]
+    metric_keys = list(metrics.keys())
     vals = [f"{metrics[k]:.4f}" for k in metric_keys]
     latex_row = "  & ".join(vals) + " \\\\"
     print(latex_row)

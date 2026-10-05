@@ -39,20 +39,28 @@ from src.utils.visualization import (  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 OUTPUTS = REPO / "outputs"
 
-# Canonical Table I row order (headline runs first).
+# Canonical Table I row order (headline runs first). All headline rows use
+# the adopted V4 protocol (DDIM-200 / eta=1.0 / quadratic) so the table is
+# sampler-matched; the eta=0.5 row is kept for continuity with the earlier
+# sweep. Fed rows point at the eta=1.0 re-evals (progress.md §14 follow-up).
 TABLE_RUNS = [
-    ("V3 (QM9)", "eval_v3"),
-    ("V4-eps eta=1.0", "eval_v4_eps_eta10_full"),
-    ("V4-eps eta=0.5", "eval_v4_eps"),
-    ("Fed IID (QM9)", "eval_fed_iid"),
-    ("Fed non-IID (QM9)", "eval_fed_niid"),
+    ("V3 (QM9) eta=1.0", "eval_v3_eta10"),
+    ("V4-eps (QM9) eta=1.0", "eval_v4_eps_eta10_full"),
+    ("V4-eps (QM9) eta=0.5", "eval_v4_eps"),
+    ("Fed IID (QM9) eta=1.0", "eval_fed_iid_eta10"),
+    ("Fed non-IID (QM9) eta=1.0", "eval_fed_niid_eta10"),
 ]
 
 
 def find_histories() -> dict[str, str]:
+    # Only the two paper-grade QM9 federated retrains: smoke/diverged/v1
+    # scratch runs and the BBBP curve (different dataset) would pollute the
+    # convergence/mode-collapse figures.
+    keep = ("fed_iid", "fed_niid")
     return {
         p.parent.name.replace("fed_", "Fed "): str(p)
         for p in sorted(OUTPUTS.glob("fed_*/history.json"))
+        if p.parent.name in keep
     }
 
 

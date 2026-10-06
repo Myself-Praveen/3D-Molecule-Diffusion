@@ -1,0 +1,74 @@
+# BBBP central *probe-scale* run: same recipe as configs/central_bbb.yaml but
+# with a much larger step budget, to test whether the atom-soup geometry is
+# simply undertraining.
+#
+# Motivation (scripts/x0_recovery_probe.py): the committed BBB model is worse
+# than the trivial eps=0 predictor at t = 20/50/100, i.e. it adds noise instead
+# of removing it. It saw only ~81 epochs x ~21 batches ~= 1.7k optimizer steps,
+# versus ~260k for the QM9 V4 model. The QM9 control beats trivial at every t.
+#
+# Budget: ~1400 epochs x ~21 steps/epoch ~= 30k steps (~2h on CPU), roughly a
+# tenth of the QM9 budget — enough to see the low-t x0 error trend move.
+#
+# Differences from configs/central_bbb.yaml:
+#   training.epochs   200 -> 1400      (larger cosine budget)
+#   training.patience  20 -> 1400      (early stopping disabled; we want the trend)
+#   checkpoint.save_every 10 -> 50     (periodic checkpoints to probe)
+#   checkpoint.dir  -> checkpoints/bbb_longprobe   (never clobber checkpoints/bbb)
+#   generation.eval_every 10 -> 20     (cheaper quick_valid cadence)
+#
+#   .venv/bin/python train.py --config configs/central_bbb_longprobe.yaml
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 128
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32
+  num_cond_classes: 2
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 1400
+  batch_size: 64
+  lr: 3.0e-4
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 6
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 1400
+
+generation:
+  eval_every: 20
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/bbb_longprobe
+  save_every: 50

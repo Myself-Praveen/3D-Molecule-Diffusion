@@ -180,12 +180,21 @@ def main() -> int:
                    help="Comma-separated timesteps to probe")
     p.add_argument("--only", default=None,
                    help="Only run probes whose label contains this substring")
+    p.add_argument("--qm9-checkpoint", default=None,
+                   help="Override the QM9 control checkpoint (e.g. a training "
+                        "checkpoint for tracking the trend)")
+    p.add_argument("--bbbp-checkpoint", default=None,
+                   help="Override the BBBP checkpoint (e.g. "
+                        "checkpoints/bbb_longprobe/epoch_200.pt)")
     args = p.parse_args()
 
+    overrides = {"qm9": args.qm9_checkpoint, "bbbp": args.bbbp_checkpoint,
+                 "b3db": args.bbbp_checkpoint}
     timesteps = [int(s) for s in args.timesteps.split(",") if s.strip()]
     for tag, cfg_path, ckpt_path, dataset in DEFAULT_PROBES:
         if args.only and args.only.lower() not in tag.lower():
             continue
+        ckpt_path = overrides.get(dataset) or ckpt_path
         probe(tag, cfg_path, ckpt_path, dataset, args.n_mols, timesteps)
     return 0
 

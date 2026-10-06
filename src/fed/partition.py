@@ -19,6 +19,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# Bump when a partitioner's output changes for the same inputs, so a stale
+# cached partition can never be silently reused. Only the listed modes get a
+# version suffix; unversioned modes keep their existing cache files.
+_PARTITION_ALGO_VERSION: dict[str, int] = {"iid": 2}
+
 # Atomic number -> element symbol (QM9 subset + common extras).
 _Z_TO_SYMBOL: dict[int, str] = {
     1: "H", 5: "B", 6: "C", 7: "N", 8: "O", 9: "F",
@@ -57,7 +62,28 @@ def label_dataset(dataset) -> list[str]:
 def partition_iid(
     labels: list[str], num_clients: int, seed: int = 42
 ) -> dict[int, list[int]]:
-    """Class-stratified equal split: every client sees the same label mix."""
+    """Class-stratified balanced split: equal-sized clients, same label mix.
+
+    Every class is dealt across all clients as evenly as possible, and the
+    leftover (``n_c % K``) molecules rotate between classes:
+
+    - each class gives every client exactly ``n_c // K`` molecules, so the
+      shared part of every client's total is identical;
+    - the remaining ``n_c % K`` molecules go to ``n_c % K`` consecutive
+      clients, and the starting client advances by that remainder between
+      classes, so the extras spread evenly instead of always landing on
+      client 0.
+
+    The previous implementation restarted the round-robin at client 0 for
+    *every* class, so client 0 absorbed every singleton class. On BBBP — whose
+    molecules mostly have unique molecular formulas — that produced partitions
+    like ``[1371, 193, 45, 16, 3, 0, 0]``, i.e. no better than the non-IID arm,
+    with the highest-index clients starved to zero (and a crash downstream in
+    the DataLoader). A client index ``i`` could only ever be fed by classes with
+    more than ``i`` members.
+    """
+    if num_clients < 1:
+        raise ValueError(f"num_clients must be >= 1, got {num_clients}")
     rng = random.Random(seed)
     by_class: defaultdict[str, list[int]] = defaultdict(list)
     for idx, label in enumerate(labels):
@@ -66,9 +92,19 @@ def partition_iid(
         rng.shuffle(indices)
 
     partitions: dict[int, list[int]] = {c: [] for c in range(num_clients)}
-    for label, indices in sorted(by_class.items()):
-        for offset, idx in enumerate(indices):
-            partitions[offset % num_clients].append(idx)
+    start_client = 0  # rotates so per-class remainders spread across clients
+    # Largest classes first: they dominate both size balance and label mixing.
+    for label in sorted(by_class, key=lambda lbl: (-len(by_class[lbl]), lbl)):
+        indices = by_class[label]
+        base, remainder = divmod(len(indices), num_clients)
+        pos = 0
+        for j in range(num_clients):
+            take = base + (1 if j < remainder else 0)
+            partitions[(start_client + j) % num_clients].extend(
+                indices[pos:pos + take]
+            )
+            pos += take
+        start_client = (start_client + remainder) % num_clients
     for indices in partitions.values():
         rng.shuffle(indices)
     return partitions
@@ -215,6 +251,9 @@ def get_partition(
     """
     labels = label_dataset(dataset)
     stem = f"K{num_clients}_{mode}_n{len(dataset)}"
+    version = _PARTITION_ALGO_VERSION.get(mode)
+    if version is not None:
+        stem = f"{stem}_v{version}"
     cache_path = Path(cache_dir) / f"{stem}.json"
     if cache_path.exists():
         partitions = load_partition(cache_path)

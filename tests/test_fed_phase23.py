@@ -12,6 +12,8 @@ Acceptance criteria from .idea/03_implementation_plan.md:
 
 from __future__ import annotations
 
+import collections
+
 import numpy as np
 import pytest
 import torch
@@ -117,13 +119,52 @@ class TestPartitioning:
 
     def test_iid_stratified(self, labels):
         parts = partition_iid(labels, num_clients=4, seed=42)
-        # All clients should have similar sizes and see every class.
-        # Round-robin stratification bounds imbalance by the class count.
+        # All clients should have near-identical sizes and see every class.
         sizes = [len(parts[c]) for c in range(4)]
-        assert max(sizes) - min(sizes) <= len({"C2H6", "C3H8", "CH4"})
+        assert max(sizes) - min(sizes) <= 1
         for c in range(4):
             client_classes = {labels[i] for i in parts[c]}
             assert client_classes == {"C2H6", "C3H8", "CH4"}
+        # Same label mix everywhere, not just the same class set.
+        global_frac = {c: labels.count(c) / len(labels) for c in set(labels)}
+        for c in range(4):
+            for cls, frac in global_frac.items():
+                n_cls = sum(1 for i in parts[c] if labels[i] == cls)
+                assert abs(n_cls / sizes[c] - frac) < 0.02
+
+    def test_iid_balanced_when_classes_are_smaller_than_k(self):
+        """Regression: singleton-heavy labels (BBBP-like) with max class < K.
+
+        The old round-robin restarted at client 0 for every class, so a client
+        index >= the largest class size was never fed at all — BBBP K=7 gave
+        [1371, 193, 45, 16, 3, 0, 0] and crashed the DataLoader on the empty
+        clients. Every client must now be populated and near-equal.
+        """
+        # Mirrors real BBBP shape: 1178 singleton formulas plus small
+        # repeated formulas, and no class larger than 5 molecules.
+        labels = [f"S{i}" for i in range(1178)]
+        labels += [f"R{i // 5}" for i in range(450)]     # 90 classes of size 5
+        assert max(collections.Counter(labels).values()) < 7
+        for k in (2, 4, 7):
+            parts = partition_iid(labels, num_clients=k, seed=42)
+            assert sorted(set(range(k)) - set(parts)) == []
+            sizes = [len(parts[c]) for c in range(k)]
+            assert all(s > 0 for s in sizes), f"K={k} starved a client: {sizes}"
+            assert max(sizes) - min(sizes) <= 1, f"K={k} unbalanced: {sizes}"
+            # No molecule is lost or duplicated.
+            assert sorted(i for idxs in parts.values() for i in idxs) \
+                == list(range(len(labels)))
+
+    def test_iid_all_singletons(self):
+        """Degenerate case: every class has exactly one member."""
+        labels = [f"Z{i}" for i in range(100)]
+        parts = partition_iid(labels, num_clients=7, seed=42)
+        sizes = sorted(len(v) for v in parts.values())
+        assert sizes == [14, 14, 14, 14, 14, 15, 15]   # 100 = 7*14 + 2
+
+    def test_iid_rejects_bad_client_count(self):
+        with pytest.raises(ValueError):
+            partition_iid(["A", "B"], num_clients=0)
 
     def test_niid_concentrates_classes(self, labels):
         parts = partition_niid(labels, num_clients=5, seed=7, dirichlet_alpha=0.3)

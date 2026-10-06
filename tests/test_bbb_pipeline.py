@@ -499,8 +499,12 @@ class TestEntryPoints:
                               cache_dir=tmp_path)
         assert max(max(v) for v in p1.values()) < 6
         assert max(max(v) for v in p2.values()) < 9
-        assert sorted(p.name for p in tmp_path.glob("*.json")) \
-            == ["K2_iid_n6.json", "K2_iid_n9.json"]
+        names = sorted(p.name for p in tmp_path.glob("*.json"))
+        # The dataset size must be part of the cache key (an algorithm version
+        # suffix may follow it), so the two datasets never share a file.
+        assert len(names) == 2 and names[0] != names[1]
+        assert all(n.startswith("K2_iid_n") for n in names)
+        assert "n6" in names[0] and "n9" in names[1]
 
 
 # ---------------------------------------------------------------------------

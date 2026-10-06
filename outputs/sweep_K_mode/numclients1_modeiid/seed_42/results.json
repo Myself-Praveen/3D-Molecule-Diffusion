@@ -1,0 +1,38 @@
+{
+  "sweep": "K_mode",
+  "combo": {
+    "fed.num_clients": 1,
+    "fed.mode": "iid"
+  },
+  "seed": 42,
+  "config": "outputs/sweep_K_mode/numclients1_modeiid/seed_42/config.yaml",
+  "checkpoint": "outputs/sweep_K_mode/numclients1_modeiid/seed_42/best_global.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 87.8,
+    "Uniqueness": 99.77220956719817,
+    "Novelty": 99.77220956719817,
+    "IntDiv_p": 0.6380383012691687,
+    "QED": 0.544656183341486,
+    "LogP": 1.9223256264236905,
+    "SNN": 0.07078959882096175,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.06264236902050115,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 81.89066059225513,
+    "Veber%": 33.59908883826879,
+    "CNS_MPO": 2.6790429986983404,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 6.628701594533029,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 87.8,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.06264236902050115,
+    "server_loss": 0.8962530791759491
+  }
+}

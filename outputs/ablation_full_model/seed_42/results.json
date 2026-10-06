@@ -1,0 +1,33 @@
+{
+  "ablation": "full_model",
+  "overrides": {},
+  "seed": 42,
+  "config": "outputs/ablation_full_model/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_full_model/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 83.7,
+    "Uniqueness": 99.7610513739546,
+    "Novelty": 99.7610513739546,
+    "IntDiv_p": 0.6608391110127287,
+    "QED": 0.5542980583338192,
+    "LogP": 2.2817283870967744,
+    "SNN": 0.07382161840194086,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.06093189964157706,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 84.10991636798089,
+    "Veber%": 46.83393070489845,
+    "CNS_MPO": 2.782303062809353,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 9.0442054958184,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 83.7,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0
+  }
+}

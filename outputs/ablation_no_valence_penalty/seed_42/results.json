@@ -1,0 +1,35 @@
+{
+  "ablation": "no_valence_penalty",
+  "overrides": {
+    "training.valence_loss_weight": 0.0
+  },
+  "seed": 42,
+  "config": "outputs/ablation_no_valence_penalty/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_no_valence_penalty/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 49.2,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.7275295261078547,
+    "QED": 0.5485338038047827,
+    "LogP": 1.624250304878049,
+    "SNN": 0.07147708866198102,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.21138211382113822,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 85.16260162601627,
+    "Veber%": 49.59349593495935,
+    "CNS_MPO": 2.7945455691056913,
+    "ConnectedValidity": 0.1,
+    "BondsPerMol": 11.920731707317072,
+    "ConnectedFrac": 0.2032520325203252
+  },
+  "requested": {
+    "Validity": 49.2,
+    "ConnectedValidity": 0.1,
+    "BBB%": 0.0
+  }
+}

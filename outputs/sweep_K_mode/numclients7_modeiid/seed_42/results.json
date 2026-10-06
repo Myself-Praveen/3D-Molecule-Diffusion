@@ -1,0 +1,21 @@
+{
+  "sweep": "K_mode",
+  "combo": {
+    "fed.num_clients": 7,
+    "fed.mode": "iid"
+  },
+  "seed": 42,
+  "config": "outputs/sweep_K_mode/numclients7_modeiid/seed_42/config.yaml",
+  "checkpoint": "outputs/sweep_K_mode/numclients7_modeiid/seed_42/best_global.pt",
+  "train_exit": 1,
+  "eval_exit": 0,
+  "status": "failed",
+  "metrics": {},
+  "requested": {
+    "Validity": null,
+    "ConnectedValidity": null,
+    "BBB%": null,
+    "ScaffDiv": null,
+    "server_loss": null
+  }
+}

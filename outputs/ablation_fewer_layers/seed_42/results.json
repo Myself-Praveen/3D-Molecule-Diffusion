@@ -1,0 +1,35 @@
+{
+  "ablation": "fewer_layers",
+  "overrides": {
+    "model.num_layers": 2
+  },
+  "seed": 42,
+  "config": "outputs/ablation_fewer_layers/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_fewer_layers/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 92.7,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.6388693964701687,
+    "QED": 0.5578795282987679,
+    "LogP": 2.361303721682848,
+    "SNN": 0.07134146806651322,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.05070118662351672,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 87.8101402373247,
+    "Veber%": 44.12081984897519,
+    "CNS_MPO": 2.869570862998921,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 7.26537216828479,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 92.7,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0
+  }
+}

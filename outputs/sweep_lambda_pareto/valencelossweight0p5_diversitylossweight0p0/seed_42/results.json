@@ -1,0 +1,38 @@
+{
+  "sweep": "lambda_pareto",
+  "combo": {
+    "training.valence_loss_weight": 0.5,
+    "training.diversity_loss_weight": 0.0
+  },
+  "seed": 42,
+  "config": "outputs/sweep_lambda_pareto/valencelossweight0p5_diversitylossweight0p0/seed_42/config.yaml",
+  "checkpoint": "outputs/sweep_lambda_pareto/valencelossweight0p5_diversitylossweight0p0/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 45.300000000000004,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.7735068634259907,
+    "QED": 0.5411483770571862,
+    "LogP": 1.4705169977924948,
+    "SNN": 0.06929552886903649,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.423841059602649,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 80.3532008830022,
+    "Veber%": 45.47461368653421,
+    "CNS_MPO": 2.804368681803847,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 17.192052980132452,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 45.300000000000004,
+    "ConnectedValidity": 0.0,
+    "Uniqueness": 100.0,
+    "IntDiv_p": 0.7735068634259907,
+    "BBB%": 0.0
+  }
+}

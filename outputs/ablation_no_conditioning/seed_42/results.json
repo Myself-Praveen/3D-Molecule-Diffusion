@@ -1,0 +1,36 @@
+{
+  "ablation": "no_conditioning",
+  "overrides": {
+    "conditioning.enabled": false,
+    "model.cond_dim": 0
+  },
+  "seed": 42,
+  "config": "outputs/ablation_no_conditioning/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_no_conditioning/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 88.4,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.6850335455099792,
+    "QED": 0.5441512829951684,
+    "LogP": 2.2432645814479644,
+    "SNN": 0.06926176138078081,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.12669683257918551,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 80.99547511312217,
+    "Veber%": 39.14027149321267,
+    "CNS_MPO": 2.808758727375565,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 8.360859728506787,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 88.4,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0
+  }
+}

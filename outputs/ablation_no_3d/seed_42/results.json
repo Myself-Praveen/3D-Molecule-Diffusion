@@ -1,0 +1,35 @@
+{
+  "ablation": "no_3d",
+  "overrides": {
+    "model.flatten_to_2d": true
+  },
+  "seed": 42,
+  "config": "outputs/ablation_no_3d/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_no_3d/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 96.0,
+    "Uniqueness": 99.58333333333333,
+    "Novelty": 99.58333333333333,
+    "IntDiv_p": 0.5686822397002258,
+    "QED": 0.554513810945195,
+    "LogP": 2.616929864583333,
+    "SNN": 0.06338039647245435,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.00625,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 89.58333333333334,
+    "Veber%": 41.354166666666664,
+    "CNS_MPO": 2.884089796130952,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 2.3895833333333334,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 96.0,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "ablation": "no_diversity_loss",
+  "overrides": {
+    "training.diversity_loss_weight": 0.0
+  },
+  "seed": 42,
+  "config": "outputs/ablation_no_diversity_loss/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_no_diversity_loss/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 97.5,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.6363825274252815,
+    "QED": 0.5437652171525781,
+    "LogP": 2.443122666666667,
+    "SNN": 0.07121633333920407,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.041025641025641026,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 82.15384615384616,
+    "Veber%": 43.58974358974359,
+    "CNS_MPO": 2.7564673172161167,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 6.936410256410256,
+    "ConnectedFrac": 0.0
+  },
+  "requested": {
+    "Validity": 97.5,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0
+  }
+}

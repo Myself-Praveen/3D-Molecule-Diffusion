@@ -1,0 +1,36 @@
+{
+  "ablation": "no_multi_obj",
+  "overrides": {
+    "training.valence_loss_weight": 0.0,
+    "training.diversity_loss_weight": 0.0
+  },
+  "seed": 42,
+  "config": "outputs/ablation_no_multi_obj/seed_42/config.yaml",
+  "checkpoint": "outputs/ablation_no_multi_obj/seed_42/checkpoints/best.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 42.6,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.7765477897631177,
+    "QED": 0.5609056875630171,
+    "LogP": 1.711995633802817,
+    "SNN": 0.07117748302948021,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.3427230046948357,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 92.25352112676056,
+    "Veber%": 58.21596244131455,
+    "CNS_MPO": 2.909237535211268,
+    "ConnectedValidity": 0.1,
+    "BondsPerMol": 16.183098591549296,
+    "ConnectedFrac": 0.2347417840375587
+  },
+  "requested": {
+    "Validity": 42.6,
+    "ConnectedValidity": 0.1,
+    "BBB%": 0.0
+  }
+}

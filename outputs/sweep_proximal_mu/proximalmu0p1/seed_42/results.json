@@ -1,0 +1,36 @@
+{
+  "sweep": "proximal_mu",
+  "combo": {
+    "fed.proximal_mu": 0.1
+  },
+  "seed": 42,
+  "config": "outputs/sweep_proximal_mu/proximalmu0p1/seed_42/config.yaml",
+  "checkpoint": "outputs/sweep_proximal_mu/proximalmu0p1/seed_42/best_global.pt",
+  "train_exit": 0,
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 15.4,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8211678648774943,
+    "QED": 0.5247705489540114,
+    "LogP": 1.7618538961038963,
+    "SNN": 0.07659430002455715,
+    "BBB%": 38.961038961038966,
+    "ScaffDiv": 0.42857142857142855,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 96.75324675324676,
+    "Veber%": 85.71428571428571,
+    "CNS_MPO": 2.9770876391465677,
+    "ConnectedValidity": 0.2,
+    "BondsPerMol": 14.025974025974026,
+    "ConnectedFrac": 1.2987012987012987
+  },
+  "requested": {
+    "Validity": 15.4,
+    "ConnectedValidity": 0.2,
+    "BBB%": 38.961038961038966,
+    "server_loss": 0.8855914076169332
+  }
+}

@@ -131,6 +131,95 @@ The "next experiment" above, launched (`a6fef55`). Two configs identical except 
 - **flow arm DONE — catastrophic 0.4% validity:** early stop at epoch 95 (patience 60; best val 3.5123 at epoch 35, val_pos never below ~3.17). Epoch-1 turbulence: 9 non-finite-grad batch skips (`x0_proj`/refine layers) before train_pos collapsed 7.9M→2.6 — grad-clip + skip guard recovered cleanly. quick_valid probes (DDIM-20 auto-Ode path) never exceeded 18.8% (n=16, mostly 0–6.2%). Full Table I eval (`outputs/eval_v4_flow/metrics.json`, watcher auto-launched on exit): **Validity 0.4% (4/1000)** — no non-finite/NaN hits in `logs/eval_v4_flow.log`, so not the known landmine; consistent with the training probes, so not an eval-harness artifact. Secondary metrics on the 4 valid mols (IntDiv 0.862, QED 0.492) are noise-level n. **A/B verdict: eps objective wins decisively (62.2% vs 0.4%) — but flow's `train_pos` plateau at ~2.11 looks close to the trivial zero-velocity predictor (≈1+Var(x0)), so undertrained-velocity vs ODE-path-bug is an OPEN triage question before declaring the paradigm result final.** Checkpoints `checkpoints/central_v4_flow/{best,last}.pt retained for triage (last.pt epoch 95 vs best.pt epoch 35, step-count probes, u↔t convention audit).
 - **Eval protocol reminder (flow arm):** `--ddim_steps 200` is the Euler grid size for the ODE path; `--eta` and `--step_schedule` are DDIM-only concepts and are ignored under flow.
 
+## 13.7 Flow Triage — the "Trivial Predictor" Hypothesis Is Refuted (Done, `1f4738f`)
+
+§13.6 left the flow arm's 0.4% validity with an open question: `train_pos` plateaued at ~2.11, which looked close to the trivial zero-velocity predictor. `scripts/flow_triage.py` answers it with the **exact analytic baseline** instead of the wrong constant:
+
+- For flow the predict-zero loss is `E‖eps_c − x0‖² = mean(1 − 1/n_g + ‖x0‖²/3)` — **3.9024 train / 3.9648 val**, NOT 2.11 and NOT 1.0. `train.py` had been logging the eps constant `1.0` for *both* objectives, which is what made 2.11 look trivial. Formula verified against Monte Carlo (analytic 2.0912 vs mc 2.0931, n=18×64).
+- Fixed in `a4df4e1`: per-objective `total_baseline` accumulated per batch (flow uses the exact formula, eps keeps 1.0). Verified with 1-epoch smoke runs (eps `baseline=1.0000`, flow `baseline=3.8829`).
+- **Verdict: the flow model is NOT a trivial predictor.** Per-u skill (`sc=none` / `sc=draft`) for `best.pt`: u=0.05 **+0.858/+0.901**, u=0.25 +0.71/+0.86, u=0.5 +0.17/+0.46, **u=0.75 +0.02 (cos 0.12) — collapse**, u=0.95 +0.18/+0.44. Real velocity learned at low/mid u with a high-u weakness; not an ODE-path or u↔t convention bug.
+- **Checkpoint/step probes (n=200, DDIM-200 unless noted):** `best.pt` (epoch 35) 1.0%@50 steps, 0.5%@200, 0.0%@1000 Euler steps ⇒ step count is not the issue. `epoch_50` 6.5%, `epoch_70` 11.5%, `last.pt` (epoch 95) **18.0%** (ConnV 15.5), `last` n=1000 **20.2%** (ConnV 16.2). Validity climbs monotonically with training ⇒ **val-loss best-checkpoint selection picked a geometrically worse checkpoint** (epoch 35) than `last` (epoch 95).
+- Artifact: `outputs/flow_triage.json`.
+
+## 13.8 Connected Validity Rewrites the V3-vs-V4 Verdict (Done, `2b194b7`)
+
+V3's 62.2% "validity" was never checked for connectivity. `scripts/backfill_connectivity.py` recomputes `ConnectedValidity/BondsPerMol/ConnectedFrac` from the saved SDF + recorded `num_total` (invalid mols are never written, so the SDF is exactly the valid list). Validated against natively-keyed evals to 1e-6 (12/12, `failures=0`); skips lossy/corrupt SDFs where the parsed count ≠ `round(Validity/100 × num_total)`.
+
+| run | Validity | ConnectedValidity | BondsPerMol |
+|---|---|---|---|
+| `eval_v3` | 62.2 | **0.0** | 11.7 |
+| `eval_v4_eps_eta10_full` | 62.2 | **54.4** | 17.8 |
+| `eval_v4_eps_eta10` | 52.5 | — | — |
+| `eval_v4_eps_eta07_full` | 58.9 | 46.0 | — |
+| `eval_v4_eps_eta03` | — | 30.5 | — |
+| `eval_v4_eps_eta00` | — | 25.5 | — |
+| `eval_v4_eps_prune2` | — | 41.9 | — |
+
+**The A/B flips: V4-eps@η=1.0 is the real winner for connected molecules (54.4% vs 0.0%, ConnectedFrac 87.5%).** 24 tables backfilled. Three dirs could not be backfilled (lossy SDF, parsed ≠ recorded): `eval_central` (720 vs 861), `eval_fed_iid` (396 vs 863), `eval_fed_niid` (234 vs 386).
+Also fixed a real Phase-7 bug: `Chem.SDMolsupplier` does not exist (correct: `Chem.SDMolSupplier`) — it was in `scripts/generate_paper_figures.py` (Fig. 6 silently fell into its `except Exception`) and in the backfill script.
+
+## 13.9 Table I Rows Are Now Sampler-Matched at η=1.0 (Done, `6f666aa`, `b6dd41d`)
+
+Re-evaluated the headline runs under the adopted protocol (DDIM-200 / η=1.0 / quadratic / relax) so Table I compares like with like:
+
+- `outputs/eval_v3_eta10/` — Validity **72.9** (729/1000), **ConnV 0.0**, BBB% 71.74, IntDiv 0.762, ScaffDiv 0.023.
+- `outputs/eval_fed_iid_eta10/` — Validity 18.1, ConnV 0.6, BBB% 31.49, IntDiv 0.877, ScaffDiv 0.414.
+- `outputs/eval_fed_niid_eta10/` — Validity 31.0, ConnV 0.0, BBB% 0.0, IntDiv 0.755, ScaffDiv 0.145.
+
+Note η=1.0 moves V3 a lot (62.2→72.9) but leaves V4-eps flat (62.2) — V3's number was sampler-sensitive.
+
+## 13.10 BBB Generation Is Atom Soup — Root-Caused to Undertraining (Diagnosis done; retrain running)
+
+Real BBB central training completed: early stop at epoch 81 (patience 20), val 0.8598, quick_valid 37.5% at epoch 80, test pos_loss 0.4838 / type 0.8216.
+
+**The sample quality is catastrophic despite decent-looking validity:** ConnectedValidity **0.0**, BondsPerMol ≈9, SMILES with 26–111 fragments, generated NN distance p50 **1.78 Å vs 1.09 Å** for real data.
+
+Ruled out, each by a direct A/B:
+- **Not guidance** — w=0 and w=2 are identical (V 93.5, ConnV 0 both).
+- **Not dataset/model centering** — BBBP train CoM ‖·‖ mean 0.98 (QM9 0.96), coord rms 2.27.
+- **Not the eval protocol** — DDIM-20, η=0.5/linear, η=0.0/quadratic all give ConnV 0.
+- **Not `cond`** — `cond=None` also soups (45/48 valid, 0 connected); label+zeros 45/0; label+raw-means 43/0.
+
+**Root cause (one-step x0 recovery probe, now `scripts/x0_recovery_probe.py`):** compare the closed-form x0 estimate against the trivial eps=0 predictor. A trained model must win at every t.
+
+| t | QM9 V4-eps (control) | BBBP central |
+|---|---|---|
+| 20 | 0.0008 vs 0.0017 ✅ | 0.0076 vs 0.0063 ❌ **worse** |
+| 50 | 0.0023 vs 0.0078 ✅ | 0.0329 vs 0.0309 ❌ **worse** |
+| 100 | 0.0064 vs 0.0277 ✅ | 0.1212 vs 0.1170 ❌ **worse** |
+| 200 | 0.0360 vs 0.1086 ✅ | 0.4628 vs 0.5231 ✅ |
+| 900 | 1.9122 vs 39.0155 ✅ | 78.7153 vs 3695.6 ✅ |
+
+The QM9 control wins throughout; the BBB model **adds noise instead of removing it at low t** — the signature of undertraining. It saw only ~21 batches × 81 epochs ≈ **1.7k optimizer steps** vs ~260k for QM9 V4. Working hypothesis: more steps fix the geometry.
+
+**Also fixed (real bug, not the soup cause): OOD conditioning.** `extract_cond` (`src/fed/trainer.py:72`) feeds **raw** `qed/logp/tpsa/mw` at training time, but `build_target_cond` passed **zeros** (raw means: qed 0.6206, logp 2.2637, tpsa 71.34, mw 340.38). Now threaded from the training set (`c3e0e37`); verified end-to-end (`qed=0.621 logp=2.264 tpsa=71.343 mw=340.385`). A/B had already shown this is not the soup cause, but guided generation is now on-distribution.
+
+## 13.11 Phase 5–8 Execution: Sweeps, Ablations, Guidance, Real-Data Figures (Done, `357e6d1`)
+
+**61 of 64 runs succeeded** (K=21/24 — the 3 failures are all K=7 iid, i.e. the partitioner bug in §13.12 and being re-run; μ=12/12, λ=15/15, ablation=7/7, guidance=6/6). All eval dirs are under `outputs/sweep_*` / `outputs/ablation_*`. (The sweep logs' own failure counter says "6 failures" because it counts a failed train *and* the resulting skipped eval separately per run.)
+
+**Every arm shows ConnectedValidity ≈ 0** — the single most important result of the sweep campaign:
+- **Guidance sweep is flat** — w=0→8 gives V 92.8→92.4, ConnV 0.0 and BBB% **0.0** throughout. The classifier cannot steer a broken geometry.
+- **λ sweep only buys parseability** — Validity climbs monotonically 42%→99.4% with valence weight, ConnV stays 0.0.
+- **μ sweep** — same; seed variance is huge (V 15–99) with no connected arm.
+- **Ablation** — `no_multi_obj` (42.6) and `no_valence_penalty` (49.2) have the *lowest* validity; all arms ConnV 0.
+
+Figs 2/4/7 were regenerated from this real data (`scripts/generate_paper_figures.py`), replacing the synthetic fallbacks — verified as 15 pareto points / 7 ablation arms / 6 guidance points. `TABLE_RUNS` now points at the η=1.0 rows and `find_histories()` is restricted to `fed_iid`/`fed_niid`.
+
+## 13.12 Federated IID Partitioner Bug (Fixed `2137c68`; K-sweep IID arms re-running)
+
+`partition_iid` restarted its round-robin at client 0 for **every** formula class, so client 0 absorbed every singleton class and any client index ≥ the largest class size was **never fed**. On real BBBP (1371 formula classes, 1178 singletons, **max class size 5**):
+
+| | before (buggy) | after (fixed) |
+|---|---|---|
+| K=2 iid | `[1419, 209]` | `[814, 814]` |
+| K=4 iid | `[1374, 193, 45, 16]` | `[407, 407, 407, 407]` |
+| K=7 iid | `[1371, 193, 45, 16, 3, 0, 0]` | `[233, 233, 233, 233, 232, 232, 232]` |
+
+The old outputs reproduce the cached partition files bit-for-bit, so the diagnosis is certain. **Consequence: the K-sweep's IID arms were never IID** — K=4 iid was as skewed as K=4 niid — and K=7 crashed with two empty clients (`num_samples=0` in the DataLoader). Now: deal each class evenly across all clients and rotate the remainders; the IID cache key carries an algorithm version (`_v2`) so stale partitions cannot be reused. QM9's IID partition was already balanced (~1.0x) because its formula classes are large, so QM9 federated results are unaffected.
+
+Regression test added (`tests/test_fed_phase23.py`); confirmed it **fails against the old implementation at every K**, so it is a real guard rather than a vacuous one. Suite status: **228 passed, 1 failed** — the failure is the pre-existing order-dependent flake `tests/test_phase1_5.py::TestTrainingConvergence::test_loss_beats_baseline` (passes in isolation, does not touch partitioning).
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -150,9 +239,32 @@ The "next experiment" above, launched (`a6fef55`). Two configs identical except 
 - `2827c3a` Harden samplers: substitute predict-zero on non-finite predictions mid-trajectory
 - `dfd6296` Per-pair bond tolerance matrix, fragment pruning, type temperature, QED filter, implementation-status appendix
 - `a6fef55` Add V4 retrain configs: V3 recipe + Tier 1+2 opt-ins, eps and flow arms
+- `4799ee6` Record V4-eps eval: 55–56% validity, diversity metrics up across the board
+- `113eced` Record V4-eps eta sweep: validity rises with eta (n=200)
+- `16cae2e` Record V4-eps full eta sweep: 62.2% validity at eta=1.0, parity with V3
+- `3ad182b` Record V4-flow result: early stop epoch 95, 0.4% validity, objective A/B pending triage
+- `b9747af` / `36a67b6` Phase 4: wire connectivity metrics into `evaluate()` and the LaTeX eval row
+- `1dbe965` Phase 5: grid-sweep and ablation runners with dry-run support
+- `1af7c39` Phase 6: dataset dispatch, conditioning/guidance wiring, label-skew partitioning
+- `541c831` Phase 7: visualization pipeline + paper figure generator (PDF+PNG)
+- `9a491a8` Phase 8: spec test suite (conditioning, oracle, metrics, runners, partitioning, figures)
+- `b65523f` Fix `generate_and_eval --help`; auto-load BBB oracle from config; guidance-scale sweep runner
+- `1f4738f` Flow triage diagnostics: exact zero-velocity baseline + per-u velocity skill
+- `2b194b7` Backfill connectivity metrics from saved SDFs; fix `SDMolSupplier` API misuse
+- `a4df4e1` Log the true per-objective predict-zero baseline (flow trivial loss ~3.9, not 1.0)
+- `6f666aa` Record η=1.0 Table I evals + first flow checkpoint probes
+- `b6dd41d` Point Table I at the matched η=1.0 rows; restrict convergence histories
+- `4fbe41e` Test post-Phase-8 execution tooling; handle empty-SDF evals; side-effect-free guidance dry-run
+- `c3e0e37` Condition guided generation on the training-set raw property means instead of OOD zeros
+- `357e6d1` Record sweep/ablation/guidance results and regenerate Figs 2/4/7 from real data
+- `2137c68` Fix `partition_iid` handing every singleton class to client 0 (+ versioned cache key, regression test)
+- `c998540` Add the one-step x0 recovery probe as a reusable diagnostic
+- `102d9d4` Probe-scale BBBP training budget + checkpoint override on the x0 probe
 
 ## 15. What's Next
 
-1. **Now:** monitor both fed retrains (`tail logs/fed_*_retrain.log`); on 50/50 completion, eval each `best_global.pt` with the adopted protocol (DDIM-200/eta0.5) + oracle for the federated Table I rows (validity, connected validity, BBB%).
-2. **Then:** Phase 5 BBB configs + sweeps (conditioned training configs now that metrics/oracle/sampler are all in place), Phase 6 entry-point wiring (conditioned/BBB training + guided generation targeting BBB% ≫ 24.8%).
-3. **After:** Phase 7 figures, Phase 8 tests + paper write-up; optional λ₂=0 ablation now that the clump theory is unproven.
+1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention.
+2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected.
+3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly.
+4. **Also outstanding:** `eval_central`, `eval_fed_iid`, `eval_fed_niid` could not be connectivity-backfilled (lossy SDFs — parsed count ≠ recorded validity). Re-evaluate them to get clean connected-validity rows for Table I.
+5. **Doc/paper:** `progress.md` §13.7–§13.12 records this session; the paper's limitations section needs the undertraining and partition-bug caveats.

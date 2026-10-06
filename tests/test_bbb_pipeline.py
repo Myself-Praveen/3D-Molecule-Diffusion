@@ -414,6 +414,25 @@ class TestEntryPoints:
         with pytest.raises(ValueError):
             build_target_cond(2, 3, torch.device("cpu"))
 
+    def test_build_target_cond_property_mean(self):
+        """Guided generation conditions on the training raw property means,
+        which must match the units ``extract_cond`` feeds at train time."""
+        from generate_and_eval import build_target_cond
+
+        mean = [0.62, 2.26, 71.34, 340.38]
+        cond = build_target_cond(1, 4, torch.device("cpu"),
+                                 properties_mean=mean)
+        props = cond["properties"]
+        assert props.shape == (4, 4)
+        assert torch.allclose(props[0], torch.tensor(mean, dtype=torch.float32))
+        # Every graph gets the same (training-mean) profile.
+        assert torch.allclose(props[0], props[3])
+        # In-distribution values are used, not the OOD zeros.
+        assert float(props.abs().sum()) > 0.0
+        with pytest.raises(ValueError):
+            build_target_cond(1, 4, torch.device("cpu"),
+                              properties_mean=[1.0, 2.0, 3.0])
+
     def test_sanitize_type_indices(self):
         from train import sanitize_type_indices
 

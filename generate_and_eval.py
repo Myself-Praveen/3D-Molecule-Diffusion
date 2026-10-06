@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -191,12 +192,24 @@ def main() -> None:
         full_dataset = load_qm9(root=ckpt_cfg["data"]["root"])
     train_smiles: set[str] = set()
     train_mols: list[Chem.Mol] = []
+    prop_sum = torch.zeros(4)
+    prop_n = 0
     for data in full_dataset:
         mol = _data_to_rdkit_mol(data)
         if mol is not None:
             s = Chem.MolToSmiles(mol)
             train_smiles.add(s)
             train_mols.append(mol)
+        # Raw QED/LogP/TPSA/MW — same keys/units ``extract_cond`` feeds the
+        # model at training time (src/fed/trainer.py). Accumulated here so
+        # guided generation can condition on the training "average molecule".
+        props = [getattr(data, k, None) for k in ("qed", "logp", "tpsa", "mw")]
+        if all(p is not None for p in props):
+            prop_sum += torch.tensor(
+                [float(p.view(-1)[0]) for p in props], dtype=torch.float32
+            )
+            prop_n += 1
+    properties_mean = (prop_sum / prop_n) if prop_n else None
 
     print(f"Training set: {len(train_smiles)} unique SMILES across {len(train_mols)} molecules")
 
@@ -212,6 +225,15 @@ def main() -> None:
     if cond_enabled:
         print(f"Conditioning enabled — guiding toward BBB class "
               f"{args.target_bbb} with w={args.guidance_scale}")
+        # Property conditioning must use the training-set raw means (the
+        # distribution ``extract_cond`` saw); zeros would be out-of-distribution.
+        if properties_mean is None:
+            print("  WARNING: no training property means found — "
+                  "falling back to zeros (out-of-distribution)")
+        else:
+            print("  Conditioned on training-mean profile (raw units): "
+                  f"qed={properties_mean[0]:.3f} logp={properties_mean[1]:.3f} "
+                  f"tpsa={properties_mean[2]:.3f} mw={properties_mean[3]:.3f}")
 
     for b_idx in range(num_batches):
         n_batch = min(args.batch_size, args.num_samples - b_idx * args.batch_size)
@@ -227,7 +249,10 @@ def main() -> None:
         # Only active when the checkpoint was trained with conditioning.
         cond = None
         if cond_enabled:
-            cond = build_target_cond(args.target_bbb, n_batch, device)
+            cond = build_target_cond(
+                args.target_bbb, n_batch, device,
+                properties_mean=properties_mean,
+            )
 
         pos, z = sample_molecules(
             model, coord_ddpm, type_ddpm,
@@ -333,21 +358,38 @@ def main() -> None:
 
 
 def build_target_cond(
-    target_bbb: int, num_graphs: int, device
+    target_bbb: int, num_graphs: int, device,
+    properties_mean: torch.Tensor | Sequence[float] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Phase 6: conditioning dict for BBB-targeted generation.
 
-    ``label`` is the target class for every graph in the batch; ``properties``
-    are zeros = the z-scored training mean (an "average molecule"), so
-    guidance is driven by the class label rather than one specific molecule's
-    property profile.
+    ``label`` is the target class for every graph in the batch. ``properties``
+    is the training-set mean QED/LogP/TPSA/MW profile — the "average molecule"
+    the model actually saw. ``extract_cond`` feeds *raw* property values
+    during training (src/fed/trainer.py), so ``properties_mean`` must be in
+    those same raw units; passing zeros (the previous behaviour, and the
+    fallback when no mean is supplied) is out-of-distribution and leaves
+    guidance driven by the class label alone.
     """
     if target_bbb not in (0, 1):
         raise ValueError(f"target_bbb must be 0 or 1, got {target_bbb!r}")
+
+    if properties_mean is None:
+        properties = torch.zeros(num_graphs, 4, device=device)
+    else:
+        mean = torch.as_tensor(
+            properties_mean, dtype=torch.float32, device=device
+        ).reshape(-1)
+        if mean.numel() != 4:
+            raise ValueError(
+                f"properties_mean must have 4 entries, got {mean.numel()}"
+            )
+        properties = mean.unsqueeze(0).expand(num_graphs, 4).contiguous()
+
     return {
         "label": torch.full((num_graphs,), int(target_bbb),
                             dtype=torch.long, device=device),
-        "properties": torch.zeros(num_graphs, 4, device=device),
+        "properties": properties,
     }
 
 

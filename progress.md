@@ -264,6 +264,30 @@ Measured on **real BBBP geometry** (48 train molecules — the output we actuall
 
 **Not applied yet**, for two reasons: (a) Task 3b only triggers if Task 1's trend says the soup is *not* pure undertraining; (b) `train.py` imports `src/objectives.py` at process start, so editing it mid-run would silently change the objective of the next sweep arm — the same hazard that applied to `partition.py`.
 
+## 13.15 Thread Oversubscription Was Costing ~18× Wall-Clock (Fixed)
+
+After the host reboot (§15 step 0) both chains were relaunched with default torch thread counts: `torch.get_num_threads()` returns `nproc // 2` = **18 per process**, so three concurrent jobs put **54 compute threads on 36 cores**. Measured live: **91–120 s/epoch** for the central retrain and **120 s/round** for a federated arm — projecting **~69 h** for the 1400-epoch budget and ~10 h per sweep chain, which would have made Task 1's decision point unreachable.
+
+A controlled measurement (one real fwd+bwd step on a 64-molecule / ~3k-atom batch, all three thread settings taken under the *same* load) found the cost to be **superlinear in threads**:
+
+| threads | step | epoch (26 batches) | 1400 epochs |
+|---|---|---|---|
+| 4 | 0.72 s | 18.7 s | 7.3 h |
+| 8 | 2.22 s | 57.8 s | 22.5 h |
+| 18 (default) | 6.81 s | 177 s | **68.8 h** |
+
+18 threads is **9.5× slower per step than 4** while using 4.5× the threads — classic OpenMP barrier/spin pathology, not a modelling problem (CPU governor `powersave` but cores at 4200/4600 MHz, no thermal throttle, 0% iowait).
+
+**Fix:** cap the thread count so total threads ≈ cores. Relaunched all three jobs with `OMP_NUM_THREADS=8 MKL_NUM_THREADS=8` (3 × 8 = 24 compute threads, load 58 → 24). Verified live:
+
+| | before | after |
+|---|---|---|
+| central training | 91–120 s/epoch | **6.1 s/epoch** |
+| federated arm | 120 s/round | **6.8 s/round** |
+| 1400-epoch budget | ~69 h | **~2.4 h** |
+
+That restores the rate the older `history.json` files imply (fed BBB 3.1 s/round, QM9 fed 0.14 s/batch) — the earlier "~3 h" estimate was right for this configuration, and the 69 h projection was purely the launch mistake. Two operational notes for future launches: `export VAR=x && cmd1 & ... cmd2 &` puts the `export` in the *background subshell* only, so later `cmd2` runs uncapped (use `env VAR=x cmd` per job instead); and killing a `run_sweep.py` parent leaves its `fed_train.py` grandchildren running as orphans, which then both waste CPU and write to the same output dirs as the replacement run.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -307,10 +331,11 @@ Measured on **real BBBP geometry** (48 train molecules — the output we actuall
 - `93d506a` Record the session's findings: flow triage, connectivity flip, BBB soup, partition bug
 - `5f983ab` Split IID sweep configs + committed x0 trend monitor (the re-run was previously launched from throwaway temp files)
 - `b09cfec` Record the Task 4 audit: Table I rows clean, `--relax` is a no-op
+- `a072b36` Measure the λ₂ valence penalty's scale on real geometry (proposal, not applied)
 
 ## 15. What's Next
 
-0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch.
+0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch. **Also: the first relaunch was silently ~18× slow from thread oversubscription — fixed in §13.15, after which the real rates are 6.1 s/epoch and 6.8 s/round (~2.4 h for the 1400-epoch budget), so the "~3 h" figure below holds.**
 1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention.
 2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected.
 3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly. **Task 3b's analysis half is done (§13.14):** the λ₂ demand side is diluted by dead classes while the type head is diffuse; the fix is a 5-line renormalization, measured, **not yet applied** (see §13.14 for why). Treat it as the single Task 3b ablation arm once Task 1 reports.

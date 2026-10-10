@@ -288,6 +288,31 @@ A controlled measurement (one real fwd+bwd step on a 64-molecule / ~3k-atom batc
 
 That restores the rate the older `history.json` files imply (fed BBB 3.1 s/round, QM9 fed 0.14 s/batch) — the earlier "~3 h" estimate was right for this configuration, and the 69 h projection was purely the launch mistake. Two operational notes for future launches: `export VAR=x && cmd1 & ... cmd2 &` puts the `export` in the *background subshell* only, so later `cmd2` runs uncapped (use `env VAR=x cmd` per job instead); and killing a `run_sweep.py` parent leaves its `fed_train.py` grandchildren running as orphans, which then both waste CPU and write to the same output dirs as the replacement run.
 
+## 13.16 First Real Results After the Relaunch: Trend Approaching, Sweep Noise-Dominated
+
+**Task 1 — the low-t x0 trend is falling toward the trivial baseline, not plateauing.** Second monitor point (epoch 200, `logs/bbb_longprobe_probe_trend.log`), with the ratio to the trivial `eps=0` predictor:
+
+| t | epoch 100 | epoch 200 | trivial | ratio @100 → @200 |
+|---|---|---|---|---|
+| 20 | 0.0084 | **0.0075** | 0.0063 | 1.33 → **1.19** |
+| 50 | 0.0386 | **0.0318** | 0.0309 | 1.25 → **1.03** |
+| 100 | 0.1419 | **0.1189** | 0.1170 | 1.21 → **1.02** |
+| 200 | 0.4821 | 0.4883 | 0.5231 | beats trivial |
+| 900 | 79.55 | 73.20 | 3695.6 | beats trivial |
+
+Every low-`t` error **decreases** and the gap to the trivial predictor **monotonically closes** (t=50 and t=100 are now within 2–3%). This is not the "plateaus above the baseline" case that §15's decision point calls soup ≠ undertraining, so the run continues; the crossing, if it comes, should show up at the 300/400 checkpoints. Corroborating signal: validation keeps improving well past the original run's stopping point — at epoch 307, val 0.8299 with **best 0.7599**, versus 0.8598 for the 200-epoch run that early-stopped at epoch 81.
+
+**Task 2 — the K-sweep arms are noise-dominated, which is itself the result.** The first two arms to finish under the relaunch, against the *same* arm from the earlier attempt and the pre-fix run:
+
+| arm | pre-fix | first post-fix attempt | this run |
+|---|---|---|---|
+| K=1 iid, seed 42 | 87.8 | 92.7 | **52.7** |
+| K=4 iid, seed 42 | 94.1 | 13.4 | **77.3** |
+
+Same config, same seed, same fixed partitioner — validity moves by 30–70 points. Verified *not* a resume artifact: `torch.load(last_global.pt)` only runs inside the explicit `if resume:` block (`fed_train.py:146-152`), and each new arm's `history.json` starts at round 1 and runs to 50. Plausible causes are thread-count-dependent float reduction order (this run is `OMP_NUM_THREADS=8`, the earlier one defaulted to 18) plus federated stochasticity over a short 50-round budget; §13.11 already noted the same ("seed variance is huge, V 15–99").
+
+**Consequence:** per-K mean validity from this sweep is not a reportable quantity — 3 seeds over a ±30 pt spread cannot separate K=1/2/4/7, so Table I's K rows need variance bars (or medians) and any monotone "validity degrades with K" claim must be dropped. The **ConnV ≈ 0 across every arm remains the robust conclusion**, since it is the one metric that does not move with seed. Both new arms eval'd at the Table I protocol (`n=1000, DDIM-200, η=1.0, quadratic, relax`): K=1 s42 V 52.7 / ConnV 0.1, K=4 s42 V 77.3 / ConnV 0.0.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -332,12 +357,13 @@ That restores the rate the older `history.json` files imply (fed BBB 3.1 s/round
 - `5f983ab` Split IID sweep configs + committed x0 trend monitor (the re-run was previously launched from throwaway temp files)
 - `b09cfec` Record the Task 4 audit: Table I rows clean, `--relax` is a no-op
 - `a072b36` Measure the λ₂ valence penalty's scale on real geometry (proposal, not applied)
+- `33676d5` Cap worker thread counts (54 threads on 36 cores was 18× slower than 24)
 
 ## 15. What's Next
 
 0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch. **Also: the first relaunch was silently ~18× slow from thread oversubscription — fixed in §13.15, after which the real rates are 6.1 s/epoch and 6.8 s/round (~2.4 h for the 1400-epoch budget), so the "~3 h" figure below holds.**
-1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention.
-2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected.
+1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention. **Interim read (§13.16, epoch 200):** the error is falling and the gap is closing monotonically (t=50 within 3%, t=100 within 2%), so it is *not* plateauing — keep going and re-read at 300/400.
+2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected. **But per §13.16 the per-K validity is noise-bound (±30 pt between runs of the same arm+seed), so report medians with variance and drop any K-monotonicity claim; only ConnV ≈ 0 is stable.**
 3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly. **Task 3b's analysis half is done (§13.14):** the λ₂ demand side is diluted by dead classes while the type head is diffuse; the fix is a 5-line renormalization, measured, **not yet applied** (see §13.14 for why). Treat it as the single Task 3b ablation arm once Task 1 reports.
 4. **Task 4 closed (§13.13):** all five Table I rows already carry matched `Validity` + `ConnectedValidity` + `metrics_relaxed`; the three un-backfillable dirs are no longer referenced by `TABLE_RUNS`. **New:** the relaxed column is a no-op — do not claim a relaxed gain in Table I, and treat post-hoc relaxation as a dead end for connectivity.
 5. **Doc/paper:** `progress.md` §13.7–§13.13 records this session; the paper's limitations section needs the undertraining, partition-bug and `--relax`-no-op caveats.

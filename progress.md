@@ -241,6 +241,29 @@ All five ran DDIM-200, `step_schedule: quadratic`, `relax: true`, and all five c
 
 **Consequence for the paper:** Table I must not present relaxed-vs-raw as a gain; the two columns are the same experiment. The `validity_80_plan.md` S1 hope that relaxation would "snap near-miss coordinates into chemically valid distances" is unreachable through this path — a real coordinate-level cleanup would have to re-perceive bonds after relaxation, and MMFF cannot be built for a structure that has no valid graph yet. This closes off post-hoc repair as a route to connectivity and pushes the soup back onto the objective/training (Tasks 1 and 3b).
 
+## 13.14 λ₂ Valence Penalty Is Mis-Scaled While the Type Head Is Diffuse (Proposal — not applied)
+
+Task 3b's "revisit the valence objective" half is analysis-only, so it runs without competing for CPU. New artifact: `scripts/valence_scale_probe.py`.
+
+`soft_valence_penalty` is **one-sided** (`relu(1.2·bond_count − expected_valence)²`), so it can only push atoms apart. Its demand side uses the model's own predicted types, `Σ_k p_k · VALENCE[type_to_z[k]]`. Raw-Z indexing is correct for both datasets (`TYPE_TO_Z = {i: i}`; QM9's `z` is raw Z too — the `QM9_ATOMIC_NUMBERS` table was removed in `9b62eb3`), but that makes `max_valence = [0,1,0,0,0,0,4,3,2,1]`: classes **2–5 (Z=2,3,4,5) are dead yet still carry softmax mass**, diluting the carbon/nitrogen/oxygen demand toward ~1.1 bonds/atom early in training.
+
+Measured on **real BBBP geometry** (48 train molecules — the output we actually want), λ₂ weight 1.0, versus the BBB `train_pos` MSE of 0.46:
+
+| type head | current penalty | renorm-live variant |
+|---|---|---|
+| one-hot true (floor) | 0.0474 | 0.0474 |
+| CE=0.82 (observed BBB head) | 0.0584 | 0.0095 |
+| CE=1.00 | 0.0843 | 0.0091 |
+| CE=1.50 | 0.2234 | 0.0096 |
+| CE=1.82 | 0.3318 | 0.0120 |
+| uniform | 0.4730 | 0.0217 |
+
+**Reading, deliberately conservative:** at the BBB run's *observed* type-head confidence (CE ≈ 0.82) the penalty on correct geometry is only 0.058 ≈ 13% of the coordinate loss — so this is **not** the soup cause and does not displace the undertraining verdict in §13.10. But during **early** training (CE ≥1.5) it reaches 0.22–0.33, i.e. 50–72% of `train_pos`, and it is purely repulsive — a gradient of that size pointing away from correct bonded geometry is a plausible contributor to the generated NN distance p50 of 1.78 Å, which sits suspiciously right at `_BOND_CUTOFF = 1.8`.
+
+**Proposed minimal fix (5 lines, ablation arm only):** renormalize the demand side over classes that can be a real atom — `p_live = p * (max_valence > 0); p_live /= p_live.sum(-1, keepdim=True)`. This keeps the model's own predicted distribution (so it still cannot dodge by predicting carbon everywhere) while removing the dead-class dilution: the penalty becomes ~0.01 at every confidence, i.e. never worse than the one-hot floor.
+
+**Not applied yet**, for two reasons: (a) Task 3b only triggers if Task 1's trend says the soup is *not* pure undertraining; (b) `train.py` imports `src/objectives.py` at process start, so editing it mid-run would silently change the objective of the next sweep arm — the same hazard that applied to `partition.py`.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -283,12 +306,13 @@ All five ran DDIM-200, `step_schedule: quadratic`, `relax: true`, and all five c
 - `102d9d4` Probe-scale BBBP training budget + checkpoint override on the x0 probe
 - `93d506a` Record the session's findings: flow triage, connectivity flip, BBB soup, partition bug
 - `5f983ab` Split IID sweep configs + committed x0 trend monitor (the re-run was previously launched from throwaway temp files)
+- `b09cfec` Record the Task 4 audit: Table I rows clean, `--relax` is a no-op
 
 ## 15. What's Next
 
 0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch.
 1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention.
 2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected.
-3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly.
+3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly. **Task 3b's analysis half is done (§13.14):** the λ₂ demand side is diluted by dead classes while the type head is diffuse; the fix is a 5-line renormalization, measured, **not yet applied** (see §13.14 for why). Treat it as the single Task 3b ablation arm once Task 1 reports.
 4. **Task 4 closed (§13.13):** all five Table I rows already carry matched `Validity` + `ConnectedValidity` + `metrics_relaxed`; the three un-backfillable dirs are no longer referenced by `TABLE_RUNS`. **New:** the relaxed column is a no-op — do not claim a relaxed gain in Table I, and treat post-hoc relaxation as a dead end for connectivity.
 5. **Doc/paper:** `progress.md` §13.7–§13.13 records this session; the paper's limitations section needs the undertraining, partition-bug and `--relax`-no-op caveats.

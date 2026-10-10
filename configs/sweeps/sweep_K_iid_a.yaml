@@ -1,0 +1,21 @@
+# Sweep: K in {1,2} x mode=iid only (chain A of the IID re-run).
+#
+# Split out of sweep_K.yaml so the 12 IID arms can be re-run after the
+# partition_iid fix (commit 2137c68) in two parallel chains. `sweep:` is kept
+# as `K_mode` so the output paths are unchanged:
+#   outputs/sweep_K_mode/numclients<K>_modeiid/seed_<s>/
+#
+#   .venv/bin/python scripts/run_sweep.py --sweep configs/sweeps/sweep_K_iid_a.yaml \
+#       --eval_samples 1000 --relax --step_schedule quadratic
+sweep: K_mode
+base_config: configs/fed_bbb_niid.yaml
+grid:
+  fed.num_clients: [1, 2]
+  fed.mode: [iid]
+seeds: [42, 123, 456]
+metrics:
+  - Validity
+  - ConnectedValidity
+  - BBB%
+  - ScaffDiv
+  - server_loss

@@ -1,0 +1,19 @@
+# Sweep: K in {4,7} x mode=iid only (chain B of the IID re-run).
+#
+# Companion to sweep_K_iid_a.yaml; see that file for rationale. `sweep:` stays
+# `K_mode` so the output paths match the original grid.
+#
+#   .venv/bin/python scripts/run_sweep.py --sweep configs/sweeps/sweep_K_iid_b.yaml \
+#       --eval_samples 1000 --relax --step_schedule quadratic
+sweep: K_mode
+base_config: configs/fed_bbb_niid.yaml
+grid:
+  fed.num_clients: [4, 7]
+  fed.mode: [iid]
+seeds: [42, 123, 456]
+metrics:
+  - Validity
+  - ConnectedValidity
+  - BBB%
+  - ScaffDiv
+  - server_loss

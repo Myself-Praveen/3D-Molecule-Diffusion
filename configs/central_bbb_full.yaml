@@ -1,0 +1,86 @@
+# BBBP central *full-budget* run: the follow-up to configs/central_bbb_longprobe.yaml.
+#
+# Motivation: the probe-scale run settled the undertraining question at epoch 400
+# (logs/bbb_longprobe_probe_trend.log). Against the trivial eps=0 predictor
+# (scripts/x0_recovery_probe.py) the low-t x0 error went
+#
+#   t   ep100   ep200   ep400   trivial      verdict at 400
+#   20  0.0084  0.0075  0.0045  0.0063       beats trivial
+#   50  0.0386  0.0318  0.0179  0.0309       beats trivial
+#  100  0.1419  0.1189  0.1017  0.1170       beats trivial
+#
+# i.e. a model that at epoch 100 was *adding* noise at low t now removes it at
+# every t — the criterion for a trained denoiser. So the soup is (at least
+# partly) undertraining, and this config spends the real budget.
+#
+# Budget: 7700 epochs x 26 batches ~= 200k optimizer steps, matching the ~260k
+# the QM9 V4 model received.
+#
+# IMPORTANT: this is a *pure budget* change. The recipe, objective and
+# checkpoints are otherwise identical to the longprobe so that step count is the
+# only thing that differs — in particular the λ₂ live-class renormalization
+# proposed in progress.md §13.14 is deliberately NOT applied here, because that
+# is a separate ablation arm and would confound this comparison.
+#
+# Differences from configs/central_bbb_longprobe.yaml:
+#   training.epochs       1400 -> 7700    (cosine LR spans the real budget)
+#   training.patience     1400 -> 7700    (early stopping stays disabled)
+#   checkpoint.save_every   50 -> 100     (77 periodic checkpoints, ~700 MB)
+#   checkpoint.dir -> checkpoints/bbb_full (never clobbers the probe's dirs)
+#   generation.eval_every   20 -> 50      (cheaper quick_valid cadence)
+#
+#   OMP_NUM_THREADS=8 .venv/bin/python train.py --config configs/central_bbb_full.yaml
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 128
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32
+  num_cond_classes: 2
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 7700
+  batch_size: 64
+  lr: 3.0e-4
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 6
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 7700
+
+generation:
+  eval_every: 50
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/bbb_full
+  save_every: 100

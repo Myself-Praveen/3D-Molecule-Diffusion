@@ -313,6 +313,26 @@ Same config, same seed, same fixed partitioner — validity moves by 30–70 poi
 
 **Consequence:** per-K mean validity from this sweep is not a reportable quantity — 3 seeds over a ±30 pt spread cannot separate K=1/2/4/7, so Table I's K rows need variance bars (or medians) and any monotone "validity degrades with K" claim must be dropped. The **ConnV ≈ 0 across every arm remains the robust conclusion**, since it is the one metric that does not move with seed. Both new arms eval'd at the Table I protocol (`n=1000, DDIM-200, η=1.0, quadratic, relax`): K=1 s42 V 52.7 / ConnV 0.1, K=4 s42 V 77.3 / ConnV 0.0.
 
+## 13.17 Undertraining CONFIRMED at Epoch 400 — Full Budget Launched
+
+The third monitor point settles Task 1. Losing to the trivial `eps=0` predictor at low `t` was the undertraining signature; at epoch 400 the BBBP central model **beats it at every timestep**:
+
+| t | ep100 | ep200 | **ep400** | trivial | ratio @400 |
+|---|---|---|---|---|---|
+| 20 | 0.0084 | 0.0075 | **0.0045** | 0.0063 | 0.71 |
+| 50 | 0.0386 | 0.0318 | **0.0179** | 0.0309 | 0.58 |
+| 100 | 0.1419 | 0.1189 | **0.1017** | 0.1170 | 0.87 |
+| 200 | 0.4821 | 0.4883 | 0.4751 | 0.5231 | 0.91 |
+| 900 | 79.55 | 73.20 | 67.87 | 3695.6 | 0.02 |
+
+The generated geometry tightens at the same time — `x0hat_NN_p50` at t=100 falls 1.39 → 1.22 (real molecules sit at 1.10) — and validation keeps improving well past where the original run stopped: **best val 0.7327** at epoch ~420 versus **0.8598** for the 200-epoch run that early-stopped at epoch 81.
+
+**Verdict: the soup is at least partly undertraining, not a config or objective error.** The original model had ~1.7k optimizer steps against QM9's ~260k; by 10k steps it had become a genuine denoiser.
+
+**Decision taken (Task 1 step 4):** launched `configs/central_bbb_full.yaml` — 7700 epochs × 26 batches ≈ **200k steps**, matching the QM9 V4 budget. Two deliberate choices: it is a *pure budget* change (same recipe as the probe, so step count is the only variable), and the λ₂ live-class renormalization from §13.14 is **not** applied, because that is a separate ablation arm and would confound this comparison. Smoke-tested first (1-epoch run, exit 0, schedule shows `epochs 1..1 (total 7700)`, correct `checkpoints/bbb_full`). A second monitor now logs `logs/bbb_full_probe_trend.log` at a 500-epoch cadence.
+
+**Still open:** the probe shows the *denoiser* is now trained, which was the blocker — it does not yet show that this converts into connected molecules. The full run's final eval (ConnV) is what answers the headline question, and §§13.13–13.14 say the two other candidate causes (post-hoc relaxation, the λ₂ demand side) cannot.
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -358,11 +378,12 @@ Same config, same seed, same fixed partitioner — validity moves by 30–70 poi
 - `b09cfec` Record the Task 4 audit: Table I rows clean, `--relax` is a no-op
 - `a072b36` Measure the λ₂ valence penalty's scale on real geometry (proposal, not applied)
 - `33676d5` Cap worker thread counts (54 threads on 36 cores was 18× slower than 24)
+- `b83cafa` Record the first post-relaunch results: trend closing, K-sweep noise-bound
 
 ## 15. What's Next
 
 0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch. **Also: the first relaunch was silently ~18× slow from thread oversubscription — fixed in §13.15, after which the real rates are 6.1 s/epoch and 6.8 s/round (~2.4 h for the 1400-epoch budget), so the "~3 h" figure below holds.**
-1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention. **Interim read (§13.16, epoch 200):** the error is falling and the gap is closing monotonically (t=50 within 3%, t=100 within 2%), so it is *not* plateauing — keep going and re-read at 300/400.
+1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention. **RESOLVED (§13.17, epoch 400):** the model now beats the trivial predictor at **every** t, so the undertraining branch was taken and the full 200k-step budget is launched as `configs/central_bbb_full.yaml`. The probe itself continues to 1400 for the trend record; the *decision* no longer depends on it.
 2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected. **But per §13.16 the per-K validity is noise-bound (±30 pt between runs of the same arm+seed), so report medians with variance and drop any K-monotonicity claim; only ConnV ≈ 0 is stable.**
 3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly. **Task 3b's analysis half is done (§13.14):** the λ₂ demand side is diluted by dead classes while the type head is diffuse; the fix is a 5-line renormalization, measured, **not yet applied** (see §13.14 for why). Treat it as the single Task 3b ablation arm once Task 1 reports.
 4. **Task 4 closed (§13.13):** all five Table I rows already carry matched `Validity` + `ConnectedValidity` + `metrics_relaxed`; the three un-backfillable dirs are no longer referenced by `TABLE_RUNS`. **New:** the relaxed column is a no-op — do not claim a relaxed gain in Table I, and treat post-hoc relaxation as a dead end for connectivity.

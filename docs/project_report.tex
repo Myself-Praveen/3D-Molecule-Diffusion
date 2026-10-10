@@ -625,10 +625,10 @@ DDIM-200, $\eta=0.5$, linear, relax & \textbf{62.2} & --- \\
 \textbf{Parameter} & \textbf{IID} & \textbf{Non-IID} \\
 \midrule
 Clients $K$ & 4 & 4 \\
-Local epochs $E$ & 3 & 3 \\
+Local epochs $E$ & 1 & 1 \\
 Communication rounds & 50 & 50 \\
 FedProx $\mu$ & 0.0 & 0.1 \\
-Personal heads & No & Yes \\
+Personal heads & No & No \\
 Partitioning & Stratified equal & Dirichlet($\alpha=0.5$) \\
 \bottomrule
 \end{tabular}
@@ -706,16 +706,188 @@ The project includes \texttt{visualize.py} which generates:
 Additionally, \texttt{scripts/build\_dashboard.py} generates a comprehensive HTML dashboard from all evaluation runs, with metric cards, sortable comparison tables, and 2D molecular galleries.
 
 % ═══════════════════════════════════════════════════════════════
+\section{Limitations}
+\label{sec:limitations}
+% ═══════════════════════════════════════════════════════════════
+
+Each limitation below was established by direct measurement rather than
+conjecture, and together they bound what the reported results support.
+
+\subsection{L1: BBB-Targeted Generation Does Not Yet Produce Molecules}
+
+\textbf{The headline BBB claim is not met.} Every centralized, federated,
+ablated and guidance-swept BBB arm produces unconnected atom soup, with
+\texttt{ConnectedValidity} (valid \emph{and} a single connected fragment)
+equal to \textbf{0.0} in every configuration we ran:
+
+\begin{itemize}
+    \item \textbf{Guidance is flat}: $w = 0 \to 8$ moves validity only
+          92.8 $\to$ 92.4, with ConnV 0.0 and BBB\% 0.0 throughout --- the
+          classifier cannot steer a geometry that is already broken.
+    \item \textbf{The $\lambda_2$ sweep only buys parseability}: raising the
+          valence weight walks validity monotonically from 42\% to 99.4\%
+          while ConnV stays 0.0.
+    \item \textbf{The $\mu$ sweep and the seven-arm ablation} agree, and the
+          ablation's two lowest-validity arms are
+          \texttt{no\_multi\_obj} (42.6\%) and \texttt{no\_valence\_penalty}
+          (49.2\%).
+\end{itemize}
+
+We ruled out, each by a direct A/B rather than by argument: guidance strength,
+dataset and conditioning centering, the evaluation protocol
+(DDIM-20/$\eta$0.5/linear, $\eta$0.0/quadratic and $\eta$1.0 all give ConnV
+0), the conditioning path itself (\texttt{cond=None} also soups), and
+out-of-distribution conditioning (a real bug, fixed separately, but not the
+cause). Raw geometry confirms it: the generated nearest-neighbour distance p50
+is 1.78~\AA{} against 1.09~\AA{} for real BBBP molecules.
+
+The cause is \textbf{undertraining}, established with a one-step $x_0$
+recovery probe that compares the model's closed-form $x_0$ estimate against the
+trivial $\epsilon = 0$ predictor a trained denoiser must beat at every
+timestep. The original BBB model \emph{lost} to it at every low $t$; as the
+step budget grew, it crossed:
+
+\begin{center}
+\begin{tabular}{rrrrr}
+\toprule
+$t$ & epoch 100 & epoch 200 & epoch 400 & trivial \\
+\midrule
+20  & 0.0084 & 0.0075 & \textbf{0.0045} & 0.0063 \\
+50  & 0.0386 & 0.0318 & \textbf{0.0179} & 0.0309 \\
+100 & 0.1419 & 0.1189 & \textbf{0.1017} & 0.1170 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The committed BBB model had seen roughly 1.7k optimizer steps against
+${\sim}260$k for the QM9 model. \textbf{We therefore scope the BBB claims
+down}: the pipeline --- dataset, oracle (test AUROC 0.9218), conditioning,
+classifier-free guidance and the connectivity-aware metric suite --- is
+validated, but the BBB generator is not yet usable, and the full-budget
+retrain that would test this is still running.
+
+\subsection{L2: The Federated IID Partitioner Was Broken for Label-Skewed Data}
+
+\texttt{partition\_iid} restarted its round-robin at client~0 for every formula
+class, so client~0 absorbed every singleton class and any client index greater
+than the largest class size was never fed. BBBP has 1371 formula classes, 1178
+of them singletons, and a maximum class size of \textbf{5}, which produced:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & before & after \\
+\midrule
+$K=2$ & $[1419, 209]$ & $[814, 814]$ \\
+$K=4$ & $[1374, 193, 45, 16]$ & $[407, 407, 407, 407]$ \\
+$K=7$ & $[1371, 193, 45, 16, 3, 0, 0]$ & $[233, 233, 233, 233, 232, 232, 232]$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The practical consequence is that \textbf{the IID arms of the $K$-sweep were
+never IID} --- $K=4$ IID was as skewed as $K=4$ non-IID --- and $K=7$ crashed
+outright with two empty clients. $K=1$ is unaffected, and QM9's IID partitions
+were already balanced because its formula classes are large, so the QM9
+federated results stand. The fix deals each class evenly and rotates the
+remainders, and the IID cache key now carries an algorithm version so stale
+partitions cannot be reused. Any previously reported IID-versus-non-IID
+conclusion should be regarded as invalid until the corrected run completes.
+
+\subsection{L3: Post-Hoc Relaxation Cannot Rescue Anything}
+
+The six-strategy plan expected force-field relaxation to ``snap near-miss
+coordinates into chemically valid distances''. \textbf{It cannot}, for two
+structural reasons. First, invalid molecules have already become \texttt{None}
+by the time relaxation runs, and \texttt{relax\_molecule(None)} returns
+\texttt{None}, so the invalid set is fixed before relaxation can touch it.
+Second, the bond graph is perceived from the generated coordinates \emph{before}
+MMFF runs and is never re-derived afterwards, so the connectivity metrics are
+invariant to it. Measured: \texttt{metrics\_relaxed} is byte-identical to
+\texttt{metrics} in every Table~I row (0 of 16 keys differ in four of the five;
+the fifth differs in one fingerprint-based key only). \textbf{The relaxed
+column must therefore not be presented as a gain, and post-hoc relaxation is a
+dead end for connectivity} --- eliminating one of the three candidate fixes
+for L1.
+
+\subsection{L4: Same-Arm, Same-Seed Validity Varies by Tens of Points}
+
+Re-running a single sweep arm with an identical configuration, seed and
+corrected partition yielded validity values of 92.7, 13.4, 52.7 and 77.3.
+We verified this is not a resume artefact --- \texttt{torch.load} of
+\texttt{last\_global.pt} executes only under an explicit \texttt{-{}-resume}
+flag, and each fresh arm's history begins at round~1. The contributing factors
+are thread-count-dependent floating-point reduction order and federated
+stochasticity over a 50-round budget. \textbf{Per-$K$ mean validity from this
+sweep is therefore not a reportable quantity}: three seeds cannot separate
+$K \in \{1,2,4,7\}$ across a spread of this size, so any monotonic
+``validity degrades with $K$'' claim must be dropped. Only ConnV $\approx 0$,
+which does not move with seed, is robust.
+
+\subsection{L5: A Quantified Defect in the $\lambda_2$ Valence Penalty}
+
+The penalty is one-sided --- $\mathrm{ReLU}(1.2 \cdot \mathrm{bond\_count} -
+\mathrm{expected\_valence})^2$ --- so it can only push atoms apart, and its
+demand side takes the expectation over the model's own predicted type
+distribution. The indices for $Z \in \{2,3,4,5\}$ are unreachable yet still
+carry softmax mass early in training, diluting the carbon/nitrogen/oxygen
+demand toward ${\sim}1.1$ bonds per atom. Measured on real BBBP geometry at
+$\lambda_2 = 1.0$ against a coordinate loss of 0.46, the penalty is 0.058 at
+the model's observed type-head confidence (13\% of the coordinate loss) but
+\textbf{0.33 early in training --- 72\%} --- pointing away from correct bonded
+geometry. Renormalizing the demand over classes that can be a real atom holds
+it at ${\sim}0.01$ at every confidence. This is recorded as a measured
+proposal and deliberately \emph{not} applied, because the full-budget BBB run
+is a pure budget change and mixing in an objective change would confound it.
+
+\subsection{L6: Validation Loss Is a Poor Checkpoint Selector for Geometry}
+
+For the flow arm, the best-validation checkpoint (epoch 35) generated
+\emph{worse} geometry than epoch 95 by validity (1.0\% versus 18.0\%), and
+validity rose monotonically with training while validation loss did not.
+Selecting checkpoints by validation MSE therefore systematically favoured
+geometrically worse models. This also explains why the undertraining stayed
+hidden for so long: a run can early-stop on a plateauing validation curve
+while the property we actually care about is still improving.
+
+\subsection{L7: Compute Scale and Metric Definitions}
+
+All results are CPU-only on a 36-thread Xeon with a 0.78M-parameter model, so
+the step budgets here are one to two orders of magnitude below GPU-scale 3D
+generation work; the undertraining in L1 is partly a consequence of that. One
+measurement artefact matters for reproduction: the default 18-thread torch
+configuration put 54 threads on 36 cores across three concurrent jobs, which is
+\emph{9.5$\times$ slower per step} than 4 threads on the same load, so uncapped
+concurrent runs can understate throughput by more than an order of magnitude.
+Finally, on metric definitions: plain validity passes disconnected single
+atoms and is not a meaningful headline number on its own --- which is exactly
+why ConnectedValidity is reported beside it --- and \texttt{BBB\%} takes the
+sentinel value $-1.0$ on QM9 rows, where the BBB oracle does not apply.
+
+% ═══════════════════════════════════════════════════════════════
 \section{Future Work}
 % ═══════════════════════════════════════════════════════════════
 
 \begin{enumerate}
-    \item \textbf{V3 Full Training:} Complete the 256-dim/8-layer/cosine/attention training ($\sim$200 epochs, targeting $>$80\% validity).
-    \item \textbf{Federated Evaluation:} Evaluate completed federated models under the adopted DDIM-200/eta0.5/relax protocol.
-    \item \textbf{Full Sweep:} $K \in \{1,2,4,7\} \times \{\text{IID, non-IID}\} \times \mu \in \{0, 0.01, 0.1, 1.0\}$.
-    \item \textbf{BBB-Conditioned Generation:} Train with conditioning and evaluate BBB\% $\gg$ 24.8\%.
-    \item \textbf{Ablation Studies:} Isolate the contribution of each of the six strategies.
-    \item \textbf{Paper Submission:} Full experimental write-up with Tables I--IV mirroring GraphGANFed's axes plus 3D-specific analyses.
+    \item \textbf{Full BBB budget:} finish the 7700-epoch (${\sim}$200k-step) retrain
+          and evaluate ConnV. This is the decisive test of whether a trained
+          denoiser converts into connected molecules, and it is the only one of
+          the three candidate fixes for L1 still standing.
+    \item \textbf{$\lambda_2$ renormalization ablation:} apply the live-class
+          renormalization from L5 as a single ablation arm and compare ConnV.
+    \item \textbf{Geometry-aware checkpoint selection:} select on generated
+          connectivity rather than validation MSE, per L6.
+    \item \textbf{Corrected $K$-sweep:} report medians with variance bars once the
+          fixed-partitioner run completes, per L4, and drop the $K$-monotonicity
+          claim.
+    \item \textbf{Oracle-conditioned targeting:} once the generator produces
+          connected molecules, re-run the guidance sweep against a meaningful
+          ConnV baseline instead of a flat 0.0.
+    \item \textbf{Scale:} move off CPU-only training and add a bond-order head
+          with valence-aware sampling, targeting QM9 $>$80\% validity.
+    \item \textbf{Paper submission:} full write-up with Tables I--IV mirroring
+          GraphGANFed's axes, an honest BBB negative result, and this
+          limitations section carried over verbatim.
 \end{enumerate}
 
 % ═══════════════════════════════════════════════════════════════

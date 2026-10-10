@@ -11,28 +11,28 @@
   "eval_exit": 0,
   "status": "ok",
   "metrics": {
-    "Validity": 60.6,
+    "Validity": 77.5,
     "Uniqueness": 100.0,
     "Novelty": 100.0,
-    "IntDiv_p": 0.7286332654638069,
-    "QED": 0.5759332191690377,
-    "LogP": 1.9948981023102312,
-    "SNN": 0.07350298964655937,
+    "IntDiv_p": 0.7042347885583538,
+    "QED": 0.5532823159877837,
+    "LogP": 1.8573163870967748,
+    "SNN": 0.07331501350991894,
     "BBB%": 0.0,
-    "ScaffDiv": 0.22607260726072606,
+    "ScaffDiv": 0.1896774193548387,
     "ScaffCov": 0.08333333333333333,
-    "Lipinski%": 91.91419141914191,
-    "Veber%": 52.64026402640264,
-    "CNS_MPO": 2.8753870485619992,
+    "Lipinski%": 82.83870967741936,
+    "Veber%": 35.483870967741936,
+    "CNS_MPO": 2.7477255391705064,
     "ConnectedValidity": 0.0,
-    "BondsPerMol": 12.21947194719472,
+    "BondsPerMol": 10.892903225806451,
     "ConnectedFrac": 0.0
   },
   "requested": {
-    "Validity": 60.6,
+    "Validity": 77.5,
     "ConnectedValidity": 0.0,
     "BBB%": 0.0,
-    "ScaffDiv": 0.22607260726072606,
-    "server_loss": 0.8959964215755463
+    "ScaffDiv": 0.1896774193548387,
+    "server_loss": 0.8761969407399496
   }
 }

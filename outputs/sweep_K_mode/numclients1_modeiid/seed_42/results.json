@@ -11,28 +11,28 @@
   "eval_exit": 0,
   "status": "ok",
   "metrics": {
-    "Validity": 87.8,
-    "Uniqueness": 99.77220956719817,
-    "Novelty": 99.77220956719817,
-    "IntDiv_p": 0.6380383012691687,
-    "QED": 0.544656183341486,
-    "LogP": 1.9223256264236905,
-    "SNN": 0.07078959882096175,
+    "Validity": 52.7,
+    "Uniqueness": 99.81024667931689,
+    "Novelty": 99.81024667931689,
+    "IntDiv_p": 0.7647497579466941,
+    "QED": 0.5595819484539833,
+    "LogP": 1.781126527514232,
+    "SNN": 0.0741741179834986,
     "BBB%": 0.0,
-    "ScaffDiv": 0.06264236902050115,
+    "ScaffDiv": 0.2922201138519924,
     "ScaffCov": 0.08333333333333333,
-    "Lipinski%": 81.89066059225513,
-    "Veber%": 33.59908883826879,
-    "CNS_MPO": 2.6790429986983404,
-    "ConnectedValidity": 0.0,
-    "BondsPerMol": 6.628701594533029,
-    "ConnectedFrac": 0.0
+    "Lipinski%": 86.71726755218216,
+    "Veber%": 54.83870967741935,
+    "CNS_MPO": 2.9084077256709135,
+    "ConnectedValidity": 0.1,
+    "BondsPerMol": 13.472485768500949,
+    "ConnectedFrac": 0.18975332068311196
   },
   "requested": {
-    "Validity": 87.8,
-    "ConnectedValidity": 0.0,
+    "Validity": 52.7,
+    "ConnectedValidity": 0.1,
     "BBB%": 0.0,
-    "ScaffDiv": 0.06264236902050115,
-    "server_loss": 0.8962530791759491
+    "ScaffDiv": 0.2922201138519924,
+    "server_loss": 0.8747922579447428
   }
 }

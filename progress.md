@@ -220,6 +220,27 @@ The old outputs reproduce the cached partition files bit-for-bit, so the diagnos
 
 Regression test added (`tests/test_fed_phase23.py`); confirmed it **fails against the old implementation at every K**, so it is a real guard rather than a vacuous one. Suite status: **228 passed, 1 failed** — the failure is the pre-existing order-dependent flake `tests/test_phase1_5.py::TestTrainingConvergence::test_loss_beats_baseline` (passes in isolation, does not touch partitioning).
 
+## 13.13 Task 4 Audit — Table I Rows Are Clean, but `--relax` Is a No-Op (Done)
+
+Task 4 asked for "matched `Validity` + `ConnectedValidity` + relaxed numbers on every Table I row". Audit of the five `TABLE_RUNS` rows in `scripts/generate_paper_figures.py` shows **this is already satisfied** — no re-evaluation needed:
+
+| Table I row | eval dir | n | η | Validity | ConnV | relaxed block |
+|---|---|---|---|---|---|---|
+| V3 (QM9) η=1.0 | `eval_v3_eta10` | 1000 | 1.0 | 72.9 | 0.0 | present |
+| V4-eps (QM9) η=1.0 | `eval_v4_eps_eta10_full` | 1000 | 1.0 | 62.2 | 54.4 | present |
+| V4-eps (QM9) η=0.5 | `eval_v4_eps` | 1000 | 0.5 | 55.0 | 37.6 | present |
+| Fed IID (QM9) η=1.0 | `eval_fed_iid_eta10` | 1000 | 1.0 | 18.1 | 0.6 | present |
+| Fed non-IID (QM9) η=1.0 | `eval_fed_niid_eta10` | 1000 | 1.0 | 31.0 | 0.0 | present |
+
+All five ran DDIM-200, `step_schedule: quadratic`, `relax: true`, and all five carry `metrics_relaxed`. The three dirs §13.8 flagged as un-backfillable (`eval_central`, `eval_fed_iid`, `eval_fed_niid`) are **no longer referenced** — `TABLE_RUNS` points at their η=1.0 replacements. (`BBB% = -1.0` on the QM9 rows is the oracle-disabled sentinel, correct for non-BBBP molecules.)
+
+**Finding: the `--relax` column is not a result.** `metrics_relaxed` is byte-identical to `metrics` in every row (0 of 16 keys differ in 4/5; `eval_fed_niid_eta10` differs by one key, SNN 0.137666→0.137655). Two structural reasons, both verified:
+
+1. **Relaxation cannot rescue an invalid molecule.** `all_mols` holds `None` for every molecule that failed `coords_and_types_to_mol`, and `relax_molecule(None)` returns `None` (`src/utils/evaluation.py:423`). The invalid set is fixed *before* relaxation runs, so `Validity`/`ConnectedValidity` are invariant by construction. Confirmed on disk: raw and relaxed SDFs contain the same valid-only molecules (e.g. `eval_v3_eta10` 729 = 729, `eval_v4_eps_eta10_full` 622 = 622).
+2. **The bond graph is already fixed when relaxation runs.** `coords_and_types_to_mol` perceives bonds via the covalent-radii builder from the *generated* coordinates; MMFF/UFF minimization then moves atoms without re-deriving bonds, so `ConnectedValidity`/`BondsPerMol`/`ConnectedFrac` cannot change. SDF-to-SDF SMILES comparison confirms only 3D-derived descriptors move: 0/729 changed in `eval_v3_eta10`, 24/622 in `eval_v4_eps_eta10_full`, 18/181 in `eval_fed_iid_eta10` — none of them the headline metrics.
+
+**Consequence for the paper:** Table I must not present relaxed-vs-raw as a gain; the two columns are the same experiment. The `validity_80_plan.md` S1 hope that relaxation would "snap near-miss coordinates into chemically valid distances" is unreachable through this path — a real coordinate-level cleanup would have to re-perceive bonds after relaxation, and MMFF cannot be built for a structure that has no valid graph yet. This closes off post-hoc repair as a route to connectivity and pushes the soup back onto the objective/training (Tasks 1 and 3b).
+
 ## 14. Commit History
 
 - `c1a1ef5` resumable chunked training + central split/loader fixes
@@ -260,11 +281,14 @@ Regression test added (`tests/test_fed_phase23.py`); confirmed it **fails agains
 - `2137c68` Fix `partition_iid` handing every singleton class to client 0 (+ versioned cache key, regression test)
 - `c998540` Add the one-step x0 recovery probe as a reusable diagnostic
 - `102d9d4` Probe-scale BBBP training budget + checkpoint override on the x0 probe
+- `93d506a` Record the session's findings: flow triage, connectivity flip, BBB soup, partition bug
+- `5f983ab` Split IID sweep configs + committed x0 trend monitor (the re-run was previously launched from throwaway temp files)
 
 ## 15. What's Next
 
+0. **Host reboot, not a code failure (2026-10-06 13:55 → 10-10 15:11 idle):** every background job was killed by an OS reboot, ~4 days before the work was noticed. Both chains were relaunched on 10-10 15:11 (`setsid`, verified alive): training resumed from `last.pt` and confirmed via the checkpoint itself at `epoch=125` (not a silent restart from 0). Sweep stdout is block-buffered when redirected, so `logs/sweep_K_iid_*.log` looks empty for long stretches — read progress from `outputs/sweep_K_mode/*/*/results.json` instead. Two traps found in the interrupted state: `K=1 s=123` and `K=4 s=123` were killed mid-train, so their `eval/metrics.json` still hold **stale pre-fix** numbers (90.2 / 92.5); and `K=2`×3 / `K=4 s=456` are entirely pre-fix. Because the fix also changed within-client index order, K=1 s=42 moved 87.8→92.7, so all 12 arms are re-run as one uniform batch.
 1. **Running now (probe-scale BBB retrain):** `configs/central_bbb_longprobe.yaml` — ~1400 epochs × 26 batches ≈ **36k steps** (~3h), early stopping disabled, checkpoints every 50 epochs in `checkpoints/bbb_longprobe/`. A monitor probes the low-t x0 error at every 100th checkpoint into `logs/bbb_longprobe_probe_trend.log`. **Decision point:** if the low-t x0 error drops below the trivial baseline, scale to the full (~200k-step) budget; if it plateaus above it, the soup is not pure undertraining and the architecture/objective needs attention.
 2. **Running now (K-sweep IID re-run):** the 12 BBBP IID arms (K=1,2,4,7 × 3 seeds) retrained against the fixed partitioner, writing in place to `outputs/sweep_K_mode/numclients*_modeiid/`. Commit the results, then regenerate Table I + Figs 2/4/7 so the corrected partitions are reflected.
 3. **Then:** the headline BBB story still needs resolution — every centralized, federated, ablated and guided BBB arm produces unconnected fragment soup (ConnV ≈ 0). Options: (a) finish the undertraining test above; (b) revisit the x0-valence all-pairs surrogate; (c) report soup as the honest finding and scope the paper's BBB claims accordingly.
-4. **Also outstanding:** `eval_central`, `eval_fed_iid`, `eval_fed_niid` could not be connectivity-backfilled (lossy SDFs — parsed count ≠ recorded validity). Re-evaluate them to get clean connected-validity rows for Table I.
-5. **Doc/paper:** `progress.md` §13.7–§13.12 records this session; the paper's limitations section needs the undertraining and partition-bug caveats.
+4. **Task 4 closed (§13.13):** all five Table I rows already carry matched `Validity` + `ConnectedValidity` + `metrics_relaxed`; the three un-backfillable dirs are no longer referenced by `TABLE_RUNS`. **New:** the relaxed column is a no-op — do not claim a relaxed gain in Table I, and treat post-hoc relaxation as a dead end for connectivity.
+5. **Doc/paper:** `progress.md` §13.7–§13.13 records this session; the paper's limitations section needs the undertraining, partition-bug and `--relax`-no-op caveats.

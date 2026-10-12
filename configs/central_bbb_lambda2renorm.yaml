@@ -1,0 +1,83 @@
+# Task 3b ablation: λ₂ demand side renormalized over *live* classes only.
+#
+# Motivation (progress.md §13.14): `soft_valence_penalty` is one-sided
+# (relu(1.2·bond_count − valence)²), so it can only push atoms apart. With
+# raw-Z type indices the classes 2-5 (Z = 2,3,4,5) are dead — max_valence 0 —
+# yet they still carry softmax mass, which dilutes the expected valence demand
+# toward ~1.1 bonds/atom while the type head is diffuse. Measured on real BBBP
+# geometry the penalty on correct geometry is 0.058 at the run's observed type
+# head (CE 0.82) but 0.22-0.33 during early training (CE ≥ 1.5), i.e. 50-72% of
+# the coordinate loss and purely repulsive.
+#
+# This arm renormalizes the demand over live classes (p_live = p·[max_valence>0],
+# renormalized), which makes the penalty ~0.01 at every confidence — never worse
+# than the one-hot floor — while still using the model's own predicted
+# distribution (it cannot dodge by predicting carbon everywhere).
+#
+# Scope: this is the *single* Task 3b ablation arm. It does NOT touch
+# configs/central_bbb_full.yaml or checkpoints/bbb_full — budget and recipe are
+# otherwise identical to configs/central_bbb_longprobe.yaml so the demand side
+# is the only variable. Probe scale (~1400 epochs ≈ 36k steps) per the plan:
+# promote to the full budget only if this arm shows ConnV > 0 with BBB% ≫ 50%.
+#
+# Differences from configs/central_bbb_longprobe.yaml:
+#   training.valence_renorm_live  (new) -> true
+#   checkpoint.dir -> checkpoints/bbb_renorm   (never clobbers bbb_full/bbb_longprobe)
+#
+#   OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 .venv/bin/python train.py \
+#       --config configs/central_bbb_lambda2renorm.yaml --resume --run_epochs 1400
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 128
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32
+  num_cond_classes: 2
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 1400
+  batch_size: 64
+  lr: 3.0e-4
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 6
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_renorm_live: true    # §13.14 ablation: renormalize the demand side
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 1400
+
+generation:
+  eval_every: 20
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/bbb_renorm
+  save_every: 50

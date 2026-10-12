@@ -763,8 +763,41 @@ The committed BBB model had seen roughly 1.7k optimizer steps against
 ${\sim}260$k for the QM9 model. \textbf{We therefore scope the BBB claims
 down}: the pipeline --- dataset, oracle (test AUROC 0.9218), conditioning,
 classifier-free guidance and the connectivity-aware metric suite --- is
-validated, but the BBB generator is not yet usable, and the full-budget
-retrain that would test this is still running.
+validated, but the BBB generator is not yet usable.
+
+\textbf{The full budget did not change that.} The completed 7700-epoch
+(${\sim}200$k-step) retrain --- same recipe, step count the only variable;
+best checkpoint at epoch 6159, val loss 0.6835 --- still produces geometry
+looser than the trivial all-atoms-at-origin generator under the ConnV-LDAG
+diagnostic:\
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & best (ep 6159) & last (ep 7700) \\
+\midrule
+coverage            & 0.000 & 0.000 \\
+uniqueness (\AA)     & 1.873 & 1.819 \\
+mean atom dist to origin (\AA) & 6.617 & 6.497 \\
+$\rightarrow$ beats trivial? & no & no \\
+\bottomrule
+\end{tabular}
+\end{center}
+The trivial baseline scores 1.000 coverage and 0.00~\AA{} for both geometry
+columns, so the trained model never wins this metric; the same verdict holds at
+the epoch-2800, 3500 and 7200 snapshots. The standard 1000-molecule protocol
+(DDIM-200, $\eta=1.0$, quadratic, matched connectivity ruler) agrees: best
+checkpoint validity 55.4\% with ConnV \textbf{1.0} and 32.8 bonds per molecule,
+last 53.8\% with ConnV \textbf{1.2} and 33.1 bonds --- against ${\sim}19$
+bonds for real BBBP molecules and well below the QM9 arm's 62.2\%/54.4. So the
+budget produces a model that is over-bonded rather than under-bonded, and
+conditioning does not beat its own baseline either: BBB\% is 17.3 (best) and
+24.0 (last) against 24.8\% for unconditioned generation. Undertraining was therefore a real
+cause of a \emph{broken denoiser} (the probe above) but it was \textbf{not
+sufficient}: a denoiser that beats the trivial predictor at every timestep
+still does not convert into connected molecules under this objective. That
+negative result is the honest headline for the BBB arm, and it is why the
+$\lambda_2$ demand-side defect (L5) is now run as its own controlled ablation
+rather than being folded into the budget comparison.
 
 \subsection{L2: The Federated IID Partitioner Was Broken for Label-Skewed Data}
 
@@ -836,9 +869,19 @@ $\lambda_2 = 1.0$ against a coordinate loss of 0.46, the penalty is 0.058 at
 the model's observed type-head confidence (13\% of the coordinate loss) but
 \textbf{0.33 early in training --- 72\%} --- pointing away from correct bonded
 geometry. Renormalizing the demand over classes that can be a real atom holds
-it at ${\sim}0.01$ at every confidence. This is recorded as a measured
-proposal and deliberately \emph{not} applied, because the full-budget BBB run
-is a pure budget change and mixing in an objective change would confound it.
+it at ${\sim}0.01$ at every confidence.
+
+The fix is implemented as \textbf{one gated ablation arm} rather than folded
+into the full-budget run, so the budget comparison in L1 stays a pure budget
+change: \texttt{configs/central\_bbb\_lambda2renorm.yaml} turns on
+\texttt{training.valence\_renorm\_live} (default \texttt{false}, i.e. every
+pre-existing arm is bit-for-bit unchanged) and writes to its own checkpoint
+directory. Two same-seed one-epoch control runs reproduce each other exactly
+while the renormalized arm does not, which is the evidence that the switch is
+actually active in the loss; a resume-time guard refuses to load a checkpoint
+trained under the other setting. The arm trains at probe scale (1400 epochs)
+and is evaluated with the same 1000-molecule protocol as every other Table~I
+row.
 
 \subsection{L6: Validation Loss Is a Poor Checkpoint Selector for Geometry}
 
@@ -865,16 +908,76 @@ why ConnectedValidity is reported beside it --- and \texttt{BBB\%} takes the
 sentinel value $-1.0$ on QM9 rows, where the BBB oracle does not apply.
 
 % ═══════════════════════════════════════════════════════════════
+\section{Decisions on the Implementation-Plan Open Questions}
+\label{sec:openq}
+% ═══════════════════════════════════════════════════════════════
+
+The implementation plan (\texttt{implementation.md}) left five decisions open.
+Each was settled during the work; the consequences are summarised here so the
+reported scope is unambiguous.
+
+\begin{enumerate}
+    \item \textbf{BBBP only (not BBBP+B3DB).} BBBP's 2039 molecules split
+          1628/205/205 with 76.4\% positives, matching the benchmark's expected
+          distribution, and the blocking failure (L1 soup) is not data-limited:
+          it reproduces at every budget, sampler and conditioning setting we
+          tried. B3DB would have roughly doubled the effort without touching
+          the binding constraint.
+    \item \textbf{BBB model scaled to \texttt{node\_dim}=128 / 6 layers.} BBBP
+          molecules average ${\sim}25$ atoms against QM9's ${\sim}18$, so the
+          probe recipe reuses the winning QM9 geometry configuration rather
+          than the 64/4 baseline. \emph{Caveat:} this means the QM9-versus-BBB
+          comparison confounds dataset and capacity, so it is reported as a
+          recipe transfer, not as an architecture ablation.
+    \item \textbf{Guidance sweep included (Fig.~7).} Six runs at
+          $w \in \{0, 0.5, 1, 2, 4, 8\}$ were executed. The outcome is a
+          negative controllability result, reported as such: BBB\% is 0.0 at
+          every $w$ and validity moves only 92.8 $\to$ 92.4, because there is
+          no connected geometry for the classifier to steer.
+    \item \textbf{Three seeds, not five.} The $K$-sweep uses three seeds per
+          arm; the $\lambda_2\times\lambda_3$ Pareto grid and the ablation arms
+          use one seed each. Per L4 the three-seed spread is already too wide
+          to separate $K$, so five seeds would have bought precision the
+          metric does not have; medians with the seed spread are reported
+          instead and no monotonicity in $K$ is claimed.
+    \item \textbf{CPU-only, no GPU.} All training and sampling ran on a
+          36-thread Xeon with a 0.78M-parameter model. The plan's reference
+          point (QM9, ${\sim}2$~h for 100 epochs on an RTX~3090) is therefore
+          not comparable to any budget here; L7 records the two compute
+          consequences --- step budgets one to two orders below GPU scale, and
+          the measured 9.5$\times$ thread-oversubscription penalty that
+          initially masked throughput.
+\end{enumerate}
+
+\subsection{Verification Caveats (Phases 4--5)}
+
+Phase~4's checklist passes with one qualification: all new metrics return
+floats in sensible ranges and \texttt{evaluate()} is backward compatible when
+\texttt{bbb\_classifier=None}, but the item ``QM9 molecules should show
+IntDiv $> 0.8$'' holds for the headline V4 row (0.875) and not for every arm
+(V3 is 0.762; the federated rows are 0.755--0.877), so diversity is reported as
+a per-row range rather than as a universal threshold.
+
+Phase~5's checklist passes as written: the new configs load, the sweep runner
+prints its full grid under \texttt{--dry-run}, and \texttt{train.py --config
+configs/central.yaml} still trains --- re-checked with a one-epoch run
+(exit~0, QM9 recipe unchanged) after the L5 renormalization switch was added,
+which defaults to off precisely so that pre-existing arms are untouched.
+
+% ═══════════════════════════════════════════════════════════════
 \section{Future Work}
 % ═══════════════════════════════════════════════════════════════
 
 \begin{enumerate}
-    \item \textbf{Full BBB budget:} finish the 7700-epoch (${\sim}$200k-step) retrain
-          and evaluate ConnV. This is the decisive test of whether a trained
-          denoiser converts into connected molecules, and it is the only one of
-          the three candidate fixes for L1 still standing.
-    \item \textbf{$\lambda_2$ renormalization ablation:} apply the live-class
-          renormalization from L5 as a single ablation arm and compare ConnV.
+    \item \textbf{Full BBB budget: DONE, negative.} The 7700-epoch retrain
+          finished and its ConnV is 0.0 at best, last and every periodic
+          checkpoint (L1). A trained denoiser is necessary but not
+          sufficient, so the remaining candidates are the objective and the
+          sampler, not the step count.
+    \item \textbf{$\lambda_2$ renormalization ablation: RUN.} Implemented as
+          the single controlled arm described in L5, at probe scale against
+          the matched Table~I protocol, so the demand-side question is
+          answered by a direct A/B instead of by the scale measurement alone.
     \item \textbf{Geometry-aware checkpoint selection:} select on generated
           connectivity rather than validation MSE, per L6.
     \item \textbf{Corrected $K$-sweep:} report medians with variance bars once the

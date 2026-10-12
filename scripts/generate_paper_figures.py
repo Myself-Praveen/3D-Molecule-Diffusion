@@ -8,6 +8,8 @@ Usage:
 Real inputs, when present:
     outputs/fed_*/history.json          -> Fig. 1 (convergence), Fig. 3
     outputs/eval_*/metrics.json         -> Table I
+    outputs/sweep_K_mode/**/eval/metrics.json -> Table I K rows (median + sd,
+                                          plus the K=7 failure row)
     outputs/sweep_lambda_pareto/**/results.json -> Fig. 2 (else synthetic)
     outputs/ablation_*/seed_*/results.json       -> Fig. 4 (else synthetic)
     outputs/eval_*/molecules.sdf        -> Fig. 6 (else embedded SMILES)
@@ -49,7 +51,25 @@ TABLE_RUNS = [
     ("V4-eps (QM9) eta=0.5", "eval_v4_eps"),
     ("Fed IID (QM9) eta=1.0", "eval_fed_iid_eta10"),
     ("Fed non-IID (QM9) eta=1.0", "eval_fed_niid_eta10"),
+    # BBB arms, same sampler protocol (DDIM-200 / eta=1.0 / quadratic / relax).
+    # Both are in the table because the honest negative result is the paper's
+    # BBB finding: the full 200k-step budget (progress.md §13.17) and the §13.14
+    # λ₂ live-class renormalization ablation. Missing dirs are skipped, so this
+    # list stays valid while the renorm arm trains.
+    ("BBB full 200k (best)", "eval_bbb_full_final"),
+    ("BBB full 200k (last)", "eval_bbb_full_final_last"),
+    ("BBB λ₂-renorm probe (best)", "eval_bbb_renorm_final"),
 ]
+
+# K-sweep arms (progress.md §13.16): per-K validity is noise-dominated across
+# seeds, so the table carries the *median* with the seed spread instead of a
+# single run, and no monotonicity in K is implied. K=7 failed to train in both
+# attempts (train_exit=1, no checkpoint) and is reported as a failure row
+# rather than dropped.
+K_SWEEP_DIR = "sweep_K_mode"
+K_SWEEP_LABELS = {1: "Fed K=1 iid (median of 3)",
+                  2: "Fed K=2 iid (median of 3)",
+                  4: "Fed K=4 iid (median of 3)"}
 
 
 def find_histories() -> dict[str, str]:
@@ -73,6 +93,69 @@ def load_table_rows() -> dict[str, dict]:
                 rows[label] = json.loads(path.read_text())["metrics"]
             except (json.JSONDecodeError, KeyError, OSError):
                 continue
+    return rows
+
+
+def k_sweep_rows() -> dict[str, dict]:
+    """Per-K median + seed spread from the re-run K-sweep arms (§13.16).
+
+    Each arm's own ``eval/metrics.json`` is the matched Table I protocol, so
+    the row carries both ``Validity`` (median over seeds) and the matched
+    ``ConnectedValidity``. ``Validity sd`` is the population std over the seeds
+    — three seeds over a ±30 pt span cannot separate the arms, which is the
+    honest reading of this sweep.
+    """
+    import statistics
+
+    by_k: dict[int, list[dict]] = {}
+    failures: list[str] = []
+    for path in sorted((OUTPUTS / K_SWEEP_DIR).glob("numclients*_mode*/*")):
+        try:
+            k = int(path.parent.name.split("numclients")[1].split("_")[0])
+        except (IndexError, ValueError):
+            continue
+        results = path / "results.json"
+        if results.exists():
+            try:
+                if json.loads(results.read_text()).get("status") == "failed":
+                    failures.append(path.parent.name)
+                    continue
+            except (json.JSONDecodeError, OSError):
+                pass
+        metrics_path = path / "eval" / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        try:
+            by_k.setdefault(k, []).append(
+                json.loads(metrics_path.read_text())["metrics"])
+        except (json.JSONDecodeError, KeyError, OSError):
+            continue
+
+    rows: dict[str, dict] = {}
+    for k, runs in sorted(by_k.items()):
+        label = K_SWEEP_LABELS.get(k, f"Fed K={k} iid (median of {len(runs)})")
+        validity = [float(r["Validity"]) for r in runs if "Validity" in r]
+        connv = [float(r["ConnectedValidity"]) for r in runs
+                 if "ConnectedValidity" in r]
+        if not validity or not connv:
+            continue
+        numeric = {key for r in runs for key, v in r.items()
+                   if isinstance(v, (int, float))}
+        row = {
+            key: statistics.median([float(r[key]) for r in runs if key in r])
+            for key in numeric
+        }
+        row["Validity"] = statistics.median(validity)
+        row["Validity sd"] = (statistics.pstdev(validity)
+                              if len(validity) > 1 else 0.0)
+        row["ConnectedValidity"] = statistics.median(connv)
+        row["n seeds"] = len(runs)
+        rows[label] = row
+    if failures:
+        rows["Fed K=7 iid (train failed)"] = {
+            "Validity": "—", "ConnectedValidity": "—",
+            "n seeds": len(failures), "note": "train_exit=1, no checkpoint",
+        }
     return rows
 
 
@@ -240,10 +323,13 @@ def main() -> int:
 
     # Table I
     rows = {} if args.synthetic else load_table_rows()
+    if not args.synthetic:
+        rows.update(k_sweep_rows())
     if not rows:
         synthetic_notes.append("Table I")
         rng_rows = synthetic_ablation(rng)
         rows = {"synthetic": m for m in rng_rows.values()}
+
     latex = plot_metric_comparison_table(rows, outdir / "table1_metrics")
     if isinstance(latex, str):  # placeholder returns a path list instead
         written.extend([outdir / "table1_metrics.pdf",
@@ -281,6 +367,19 @@ def main() -> int:
         guidance = synthetic_guidance()
         synthetic_notes.append("Fig.7 (guidance)")
     track(plot_guidance_scale_sweep(guidance, outdir / "fig7_guidance"))
+
+    # Verification: every Table I row must come from real data with a *matched*
+    # connectivity number (same covalent-radii ruler) — a row that reports
+    # Validity without ConnectedValidity is exactly the pre-fix inflation the
+    # honest-ruler rule exists to prevent.
+    print(f"data check: pareto={len(pareto)} ablation={len(ablation)} "
+          f"guidance={len(guidance)} table_rows={len(rows)}")
+    unmatched = [name for name, m in rows.items()
+                 if "Validity" not in m or "ConnectedValidity" not in m]
+    if unmatched and not args.synthetic:
+        print("ERROR: rows missing matched Validity/ConnectedValidity: "
+              + ", ".join(unmatched))
+        return 2
 
     print(f"wrote {len(written)} files to {outdir}")
     for p in written:

@@ -78,6 +78,7 @@ def x0_valence_penalty(
     tau: int = 200,
     x0_clamp: float = 5.0,
     objective: str = "eps",
+    renorm_live: bool = False,
 ) -> torch.Tensor:
     """λ₂ validity pressure that actually trains geometry.
 
@@ -92,6 +93,9 @@ def x0_valence_penalty(
        cannot dodge by predicting carbon everywhere.
     ``objective="flow"`` recovers x0 from a velocity prediction (Tier 3.2)
     instead of a noise prediction. Returns 0 when no graph passes the gate.
+    ``renorm_live`` switches the demand side to the §13.14 live-class
+    renormalization (see ``soft_valence_penalty``); default ``False`` keeps the
+    original behaviour for every existing arm.
     """
     if lambda_weight <= 0.0:
         return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
@@ -110,6 +114,7 @@ def x0_valence_penalty(
     return lambda_weight * soft_valence_penalty(
         probs, x0_pred, None, z[keep],
         num_types=num_types, type_to_z=type_to_z, batch=remap,
+        renorm_live=renorm_live,
     )
 
 
@@ -137,6 +142,7 @@ def soft_valence_penalty(
     num_types: int,
     type_to_z: dict[int, int] | None = None,
     batch: torch.Tensor | None = None,
+    renorm_live: bool = False,
 ) -> torch.Tensor:
     """Expected valence-violation penalty over predicted bonds.
 
@@ -152,6 +158,15 @@ def soft_valence_penalty(
     cannot discriminate dense clumps (every atom trivially has k neighbors)
     from real molecules — all-pairs counting separates them (~2-3 vs ~10
     neighbors within 2.0 A).
+
+    ``renorm_live`` (ablation, progress.md §13.14): the demand side is diluted
+    by classes that cannot be a real atom for this dataset (raw-Z indexing
+    makes types 2-5, i.e. Z = 2-5, dead — ``max_valence`` 0 — while they still
+    carry softmax mass). Renormalizing over the live classes only keeps the
+    model's own predicted distribution (it still cannot dodge by predicting
+    carbon everywhere) but removes the dilution: measured on real BBBP
+    geometry the penalty becomes ~0.01 at every type-head confidence instead
+    of growing to 0.33 at CE 1.82. Default ``False`` = original behaviour.
     """
     if type_to_z is None:
         # Default QM9 type-index -> atomic-number map (index 0 is padding '*').
@@ -161,8 +176,15 @@ def soft_valence_penalty(
         [VALENCE.get(type_to_z.get(k, 0), 0) for k in range(num_types)],
         dtype=type_probs.dtype, device=type_probs.device,
     )
+    demand_probs = type_probs
+    if renorm_live:
+        live = (max_valence > 0).to(type_probs.dtype).unsqueeze(0)
+        demand_probs = type_probs * live
+        demand_probs = demand_probs / demand_probs.sum(
+            dim=-1, keepdim=True
+        ).clamp_min(1e-8)
     # Expected maximum valence under the predicted categorical distribution.
-    atom_valence = (type_probs * max_valence.unsqueeze(0)).sum(dim=-1)
+    atom_valence = (demand_probs * max_valence.unsqueeze(0)).sum(dim=-1)
 
     if batch is not None:
         pair_index = full_pair_index(batch.to(pos.device))

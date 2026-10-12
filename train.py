@@ -282,6 +282,8 @@ def train_diffusion(
 
     lambda_type = train_cfg.get("type_loss_weight", 0.5)
     lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
+    # §13.14 ablation switch: renormalize the λ₂ demand side over live classes.
+    valence_renorm_live = bool(train_cfg.get("valence_renorm_live", False))
     lambda_diversity = float(train_cfg.get("diversity_loss_weight", 0.0))
     # Tier 2.2: bond-head supervision weight (0 = off; heads then stay at
     # init and eval keeps inferring bonds from distances as before).
@@ -326,6 +328,20 @@ def train_diffusion(
                 raise ValueError(
                     f"Resume config mismatch for diffusion.objective: "
                     f"checkpoint={resume_obj} vs current={objective}. "
+                    f"Refusing to resume."
+                )
+            # §13.14: the λ₂ demand side is baked into the loss the weights
+            # were trained under, so a renorm switch must not be resumed into
+            # (the same hazard that applied to partition.py). Missing key in
+            # older checkpoints means the original behaviour, i.e. False.
+            resume_renorm = bool(
+                resume_state.get("config", {}).get("training", {})
+                .get("valence_renorm_live", False)
+            )
+            if resume_renorm != valence_renorm_live:
+                raise ValueError(
+                    f"Resume config mismatch for training.valence_renorm_live: "
+                    f"checkpoint={resume_renorm} vs current={valence_renorm_live}. "
                     f"Refusing to resume."
                 )
             model.load_state_dict(resume_state["model_state_dict"])
@@ -526,6 +542,7 @@ def train_diffusion(
                     lambda_weight=lambda_valence,
                     tau=int(train_cfg.get("valence_tau", 200)),
                     objective=objective,
+                    renorm_live=valence_renorm_live,
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(

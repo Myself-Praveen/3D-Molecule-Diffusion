@@ -190,6 +190,11 @@ class LocalTrainer:
         grad_clip: float = 0.0,
     ) -> tuple[torch.Tensor, float, float]:
         batch_data = batch_data.to(self.device)
+        # §13.14 ablation switch: renormalize the λ₂ demand side over live classes
+        # (default off; mirrors train.py).
+        valence_renorm_live = bool(
+            self.cfg["training"].get("valence_renorm_live", False)
+        )
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
 
@@ -297,6 +302,7 @@ class LocalTrainer:
                 lambda_weight=lambda_valence,
                 tau=int(self.cfg["training"].get("valence_tau", 200)),
                 objective=self.objective,
+                renorm_live=valence_renorm_live,
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(

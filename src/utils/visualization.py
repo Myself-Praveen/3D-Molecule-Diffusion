@@ -391,13 +391,10 @@ def _set_axes_equal(ax, pts: np.ndarray) -> None:
 # Fig. 7 — guidance-scale controllability
 # ---------------------------------------------------------------------------
 
-def plot_guidance_scale_sweep(results: dict, output_path: str):
-    """BBB% vs guidance scale w (Fig. 7 — controllability).
-
-    ``results``: {w: bbb_percent} or {w: {"BBB%": value}}.
-    """
+def _clean_guidance(series: dict) -> dict[float, float]:
+    """{w: value} / {w: {"BBB%": value}} -> {float(w): float(value)}."""
     clean: dict[float, float] = {}
-    for w, v in (results or {}).items():
+    for w, v in (series or {}).items():
         try:
             if isinstance(v, dict):
                 v = v.get("BBB%", v.get("BBB", None))
@@ -406,13 +403,47 @@ def plot_guidance_scale_sweep(results: dict, output_path: str):
             clean[float(w)] = float(v)
         except (TypeError, ValueError):
             continue
-    if not clean:
+    return clean
+
+
+def plot_guidance_scale_sweep(results: dict, output_path: str):
+    """BBB% vs guidance scale w (Fig. 7 — controllability).
+
+    ``results`` accepts two shapes:
+
+    - ``{w: bbb_percent}`` or ``{w: {"BBB%": value}}`` (single arm — the
+      original call signature, kept working);
+    - ``{label: {w: value}}`` (several arms on one axis, e.g. the probe-scale
+      and full-budget checkpoints, whose BBB% responses differ qualitatively).
+
+    The two are told apart by whether the outer keys are all numeric, so an
+    existing single-series caller cannot silently be read as a label map.
+    """
+    raw = results or {}
+
+    def _numeric(key) -> bool:
+        try:
+            float(key)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    if raw and not all(_numeric(k) for k in raw):
+        series = {str(label): _clean_guidance(v) for label, v in raw.items()}
+        series = {k: v for k, v in series.items() if v}
+    else:
+        series = {"": _clean_guidance(raw)}
+    if not any(series.values()):
         return _placeholder(output_path, "No guidance-sweep results")
 
     fig, ax = plt.subplots(figsize=(6, 4.5))
-    xs = sorted(clean)
-    ys = [clean[x] for x in xs]
-    ax.plot(xs, ys, marker="o", linewidth=2, color=PALETTE[0])
+    multi = len(series) > 1
+    for i, (label, clean) in enumerate(series.items()):
+        xs = sorted(clean)
+        ys = [clean[x] for x in xs]
+        ax.plot(xs, ys, marker="o", linewidth=2,
+                color=PALETTE[i % len(PALETTE)],
+                label=label or None)
     ax.axhline(50.0, linestyle="--", color="0.5", label="random baseline")
     ax.set_xlabel("Guidance scale w")
     ax.set_ylabel("BBB% (oracle)")

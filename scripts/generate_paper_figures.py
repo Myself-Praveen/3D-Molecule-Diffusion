@@ -59,17 +59,22 @@ TABLE_RUNS = [
     ("BBB full 200k (best)", "eval_bbb_full_final"),
     ("BBB full 200k (last)", "eval_bbb_full_final_last"),
     ("BBB λ₂-renorm probe (best)", "eval_bbb_renorm_final"),
+    # Task 2 arm: rotation-invariant geometry-consistency terms. Missing dirs
+    # are skipped, so this list stays valid while that arm trains.
+    ("BBB geofix probe (best)", "eval_bbb_geofix_final"),
 ]
 
 # K-sweep arms (progress.md §13.16): per-K validity is noise-dominated across
 # seeds, so the table carries the *median* with the seed spread instead of a
-# single run, and no monotonicity in K is implied. K=7 failed to train in both
-# attempts (train_exit=1, no checkpoint) and is reported as a failure row
-# rather than dropped.
+# single run, and no monotonicity in K is implied. K=7 failed to train under the
+# buggy partitioner (train_exit=1, no checkpoint); after the fix (2137c68) it
+# trains, so it is a normal median row too — a still-failed arm would reappear
+# as an explicit failure row rather than being dropped.
 K_SWEEP_DIR = "sweep_K_mode"
 K_SWEEP_LABELS = {1: "Fed K=1 iid (median of 3)",
                   2: "Fed K=2 iid (median of 3)",
-                  4: "Fed K=4 iid (median of 3)"}
+                  4: "Fed K=4 iid (median of 3)",
+                  7: "Fed K=7 iid (median of 3)"}
 
 
 def find_histories() -> dict[str, str]:
@@ -200,13 +205,26 @@ def ablation_rows() -> dict[str, dict]:
 
 
 def guidance_rows() -> dict:
-    rows = load_results_dirs("sweep_guidance/**/results.json")
-    out = {}
-    for r in rows:
-        w = (r.get("combo") or {}).get("guidance_scale")
-        if w is None:
-            continue
-        out[float(w)] = (r.get("metrics") or {}).get("BBB%", 0.0)
+    """BBB% vs w for both guidance arms (Fig. 7).
+
+    Two checkpoints with qualitatively different responses: the probe-scale
+    1400-epoch BBB arm is flat at 0% (the original negative), while the
+    full-budget 200k-step arm rises to ~58% at w=4 (progress.md section 15
+    item 11). Plotting only the first would state a claim the full-budget
+    re-run contradicts, so both are carried as separate series.
+    """
+    arms = (("full budget 200k", "sweep_guidance_full/**/results.json"),
+            ("probe scale 1400 ep", "sweep_guidance/**/results.json"))
+    out: dict[str, dict] = {}
+    for label, pattern in arms:
+        series = {}
+        for r in load_results_dirs(pattern):
+            w = (r.get("combo") or {}).get("guidance_scale")
+            if w is None:
+                continue
+            series[float(w)] = (r.get("metrics") or {}).get("BBB%", 0.0)
+        if series:
+            out[label] = series
     return out
 
 
@@ -372,8 +390,11 @@ def main() -> int:
     # connectivity number (same covalent-radii ruler) — a row that reports
     # Validity without ConnectedValidity is exactly the pre-fix inflation the
     # honest-ruler rule exists to prevent.
+    # guidance is now {arm: {w: BBB%}} so count plotted *points*, not series.
+    guidance_pts = sum(len(v) for v in guidance.values())
     print(f"data check: pareto={len(pareto)} ablation={len(ablation)} "
-          f"guidance={len(guidance)} table_rows={len(rows)}")
+          f"guidance={guidance_pts} ({len(guidance)} arm(s)) "
+          f"table_rows={len(rows)}")
     unmatched = [name for name, m in rows.items()
                  if "Validity" not in m or "ConnectedValidity" not in m]
     if unmatched and not args.synthetic:

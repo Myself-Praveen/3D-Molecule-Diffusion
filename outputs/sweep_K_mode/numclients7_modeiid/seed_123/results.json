@@ -7,15 +7,32 @@
   "seed": 123,
   "config": "outputs/sweep_K_mode/numclients7_modeiid/seed_123/config.yaml",
   "checkpoint": "outputs/sweep_K_mode/numclients7_modeiid/seed_123/best_global.pt",
-  "train_exit": 1,
+  "train_exit": 0,
   "eval_exit": 0,
-  "status": "failed",
-  "metrics": {},
+  "status": "ok",
+  "metrics": {
+    "Validity": 29.4,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.7223143214506205,
+    "QED": 0.4769860774407865,
+    "LogP": 0.12331506802721103,
+    "SNN": 0.07023085065742429,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.1870748299319728,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 64.96598639455783,
+    "Veber%": 24.149659863945576,
+    "CNS_MPO": 2.5513482264334306,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 7.918367346938775,
+    "ConnectedFrac": 0.0
+  },
   "requested": {
-    "Validity": null,
-    "ConnectedValidity": null,
-    "BBB%": null,
-    "ScaffDiv": null,
-    "server_loss": null
+    "Validity": 29.4,
+    "ConnectedValidity": 0.0,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.1870748299319728,
+    "server_loss": 1.0289239287376404
   }
 }

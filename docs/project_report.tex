@@ -1036,6 +1036,20 @@ which defaults to off precisely so that pre-existing arms are untouched.
     \item \textbf{Objective/sampler link:} with step budget and $\lambda_2$
           demand both excluded, the two surviving explanations of the soup are
           the objective's insensitivity to connectivity and the sampler.
+    \item \textbf{Geometry-aware objective (geofix): launched.} Rotation/translation-
+          invariant coordinate MSE plus an explicit pairwise-distance loss are added
+          behind a gated flag (default off) as the single controlled arm
+          `configs/central_bbb_geofix.yaml`. Acceptance is ConnV $\gg 1.2$ and
+          Bonds $\approx 19$; on failure it is recorded as a third excluded
+          objective hypothesis.
+    \item \textbf{Conditioning re-checked (mixed result):} the full-budget
+          checkpoint's conditioning signal is demonstrably alive (coordinate response
+          17\% of prediction norm; type-head 57\%), and guidance does lift BBB\%
+          from 0\% to 58.4\% at $w=4$ --- the first time this project steers the
+          property --- but ConnV stays 0.6--1.3 and bonds/mol 25--33 at every
+          parseable $w$, so property control is achievable while the geometry failure
+          is orthogonal to conditioning. Recorded honestly as task success on the
+          property axis, no help on the geometry axis.
     \item \textbf{Geometry-aware checkpoint selection:} select on generated
           connectivity rather than validation MSE, per L6.
     \item \textbf{Corrected $K$-sweep:} report medians with variance bars once the

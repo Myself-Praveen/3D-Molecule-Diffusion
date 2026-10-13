@@ -1,0 +1,28 @@
+{
+  "sweep": "guidance",
+  "combo": {
+    "guidance_scale": 1.0
+  },
+  "checkpoint": "checkpoints/bbb_full/best.pt",
+  "config": "configs/central_bbb_full.yaml",
+  "eval_exit": 0,
+  "status": "ok",
+  "metrics": {
+    "Validity": 70.39999999999999,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8300903702934778,
+    "QED": 0.6051484403238623,
+    "LogP": 2.4410132102272737,
+    "SNN": 0.08181864740240273,
+    "BBB%": 14.630681818181818,
+    "ScaffDiv": 0.34375,
+    "ScaffCov": 0.16666666666666666,
+    "Lipinski%": 88.92045454545455,
+    "Veber%": 66.33522727272727,
+    "CNS_MPO": 2.5366933928571425,
+    "ConnectedValidity": 0.9,
+    "BondsPerMol": 33.01846590909091,
+    "ConnectedFrac": 1.2784090909090908
+  }
+}

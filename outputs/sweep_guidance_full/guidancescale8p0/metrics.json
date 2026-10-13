@@ -1,0 +1,32 @@
+{
+  "metrics": {
+    "Validity": 0.7000000000000001,
+    "Uniqueness": 85.71428571428571,
+    "Novelty": 85.71428571428571,
+    "IntDiv_p": 0.865642416975364,
+    "QED": 0.4093001777709593,
+    "LogP": 0.40937,
+    "SNN": 0.0995727759702915,
+    "BBB%": 57.14285714285714,
+    "ScaffDiv": 0.5714285714285714,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 100.0,
+    "Veber%": 100.0,
+    "CNS_MPO": 3.3021428571428575,
+    "ConnectedValidity": 0.6,
+    "BondsPerMol": 7.142857142857143,
+    "ConnectedFrac": 85.71428571428571
+  },
+  "latex_row": "0.7000  & 85.7143  & 85.7143  & 0.8656  & 0.4093  & 0.4094  & 0.0996  & 57.1429  & 0.5714  & 0.0833  & 100.0000  & 100.0000  & 3.3021  & 0.6000  & 7.1429  & 85.7143 \\\\",
+  "num_valid": 7,
+  "num_total": 1000,
+  "run": {
+    "checkpoint": "/home/sahil/Desktop/3D-Molecule-Diffusion/checkpoints/bbb_full/best.pt",
+    "num_samples": 1000,
+    "ddim_steps": 200,
+    "eta": 1.0,
+    "seed": 42,
+    "step_schedule": "quadratic",
+    "relax": false
+  }
+}

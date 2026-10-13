@@ -884,6 +884,56 @@ trained under the other setting. The arm trains at probe scale (1400 epochs)
 and is evaluated with the same 1000-molecule protocol as every other Table~I
 row.
 
+\textbf{Outcome: negative.} The arm ran its full probe budget (best
+checkpoint at epoch 1160, val loss 0.7162) and was evaluated with the identical
+1000-molecule protocol (DDIM-200, $\eta=1.0$, quadratic, relax, seed 42):
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & full 200k (best) & $\lambda_2$-renorm (best) \\
+\midrule
+Validity             & 55.4 & 47.8 \\
+ConnectedValidity    & 1.0  & 0.6 \\
+BondsPerMol          & 32.8 & 30.3 \\
+BBB\%                & 17.3 & 16.1 \\
+ConnV-LDAG coverage  & 0.000 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The renormalized arm is not better on any axis, both arms stay over-bonded
+($\sim$30--33 bonds per molecule against $\sim$19 for real BBBP) and both still
+lose to the all-at-origin baseline on the LDAG diagnostic (coverage 0.000
+against the trivial generator's 1.000; uniqueness 1.870~\AA{}). The $x_0$
+monitor shows this is not merely more undertraining: the arm beats the trivial
+predictor at every timestep and then saturates ---
+
+\begin{center}
+\begin{tabular}{rrrrr}
+\toprule
+$t$ & epoch 200 & epoch 400 & epoch 1400 & trivial \\
+\midrule
+20  & 0.0070 & 0.0058 & \textbf{0.0043} & 0.0063 \\
+50  & 0.0285 & 0.0208 & \textbf{0.0176} & 0.0309 \\
+100 & 0.1036 & 0.0949 & \textbf{0.0931} & 0.1170 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Across the final 1100 epochs (a $4.7\times$ step increase) the low-$t$ error
+moves by less than 0.002 at $t=20$ and 0.006 at $t=50$. The
+renormalization's early advantage --- it leads the unrenormalized probe at
+matched epoch 200 at every $t$ and crosses the trivial baseline roughly 100
+epochs sooner --- has closed by epoch 400, so the two arms converge to the same
+plateau. The dead-class dilution is therefore a genuine defect, but it is a
+\textbf{second independent objective hypothesis excluded by direct A/B}: with
+the denoiser demonstrably converging (L1) and the demand-side dilution removed
+(this arm), sampled geometry is still soup. The surviving candidates are the
+linking of the objective to connectivity --- a permutation- and
+translation-invariant coordinate MSE is satisfied by loose geometry --- and the
+sampler itself.
+
 \subsection{L6: Validation Loss Is a Poor Checkpoint Selector for Geometry}
 
 For the flow arm, the best-validation checkpoint (epoch 35) generated
@@ -971,14 +1021,21 @@ which defaults to off precisely so that pre-existing arms are untouched.
 
 \begin{enumerate}
     \item \textbf{Full BBB budget: DONE, negative.} The 7700-epoch retrain
-          finished and its ConnV is 0.0 at best, last and every periodic
-          checkpoint (L1). A trained denoiser is necessary but not
-          sufficient, so the remaining candidates are the objective and the
-          sampler, not the step count.
-    \item \textbf{$\lambda_2$ renormalization ablation: RUN.} Implemented as
-          the single controlled arm described in L5, at probe scale against
-          the matched Table~I protocol, so the demand-side question is
-          answered by a direct A/B instead of by the scale measurement alone.
+          finished: ConnV 1.0 (best) and 1.2 (last) under the matched ruler,
+          with LDAG coverage 0.000 at best, last and every periodic checkpoint
+          (L1). A trained denoiser is necessary but not sufficient, so the
+          remaining candidates are the objective and the sampler, not the step
+          count.
+    \item \textbf{$\lambda_2$ renormalization ablation: RUN, negative.} The
+          single controlled arm described in L5 (probe scale, 1400 epochs,
+          matched Table~I protocol) removed the demand-side dilution without
+          improving any sampled-geometry metric --- ConnV 0.6 against the
+          unmodified arm's 1.0, BBB\% 16.1 against 17.3 --- so a second
+          objective hypothesis is excluded by direct A/B rather than by
+          argument.
+    \item \textbf{Objective/sampler link:} with step budget and $\lambda_2$
+          demand both excluded, the two surviving explanations of the soup are
+          the objective's insensitivity to connectivity and the sampler.
     \item \textbf{Geometry-aware checkpoint selection:} select on generated
           connectivity rather than validation MSE, per L6.
     \item \textbf{Corrected $K$-sweep:} report medians with variance bars once the

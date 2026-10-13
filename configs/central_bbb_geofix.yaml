@@ -1,0 +1,93 @@
+# BBBP probe-scale arm: rotation-invariant geometry-consistency terms (Task 2).
+#
+# Hypothesis (progress.md §15 item 10). Task 1 and the λ₂-renorm arm excluded
+# the step budget and the λ₂ demand side by direct A/B; the surviving
+# explanation was the objective↔sampler link. The coordinate loss is a per-atom
+# L2 on centred positions, which also charges the model for the *orientation*
+# of the target. At low noise that orientation is only weakly determined by
+# x_t — most of it lives in the particular noise realisation — so the cheapest
+# way to lower the loss is to predict a rotationally *averaged*, i.e. looser,
+# geometry rather than the true one. Two rotation/translation-invariant terms
+# remove that freedom:
+#
+#   Kabsch-aligned MSE  — per-molecule coordinate MSE after optimal rigid
+#                         alignment, i.e. a loss on the shape alone;
+#   pairwise-distance   — explicit MSE between interatomic distances, which is
+#                         the quantity the connectivity ruler scores.
+#
+# Both act on the denoised x0 and are gated to t < tau, exactly like
+# x0_valence_penalty (x0 error is amplified at high noise; fine geometry is
+# decided at low noise). The switch is `training.geofix` (default false, so
+# every pre-existing arm is bit-for-bit unchanged) and carries a resume guard.
+#
+# This is a *single* arm at equal weight (1.0 + 1.0): it is a test of whether
+# an explicit shape constraint fixes the soup at all, not a weight sweep.
+#
+# Probe scale, 1400 epochs, matching configs/central_bbb_lambda2renorm.yaml so
+# the A/B against the full-budget and renorm arms is direct.
+#
+#   env OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 \
+#     .venv/bin/python train.py --config configs/central_bbb_geofix.yaml \
+#       --resume --run_epochs 1400
+#
+# Acceptance: ConnV >> 1.2 AND BondsPerMol ~ 19 AND BBB% >> 24.8 (the
+# full-budget best and the unconditioned baseline respectively). Otherwise this
+# is recorded as the third excluded hypothesis.
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 128
+  edge_dim: 128
+  num_layers: 6
+  time_dim: 32
+  cond_dim: 32
+  num_cond_classes: 2
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+
+training:
+  epochs: 1400
+  batch_size: 64
+  lr: 3.0e-4
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 6
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 1400
+  geofix: true                # Task 2: rotation-invariant shape + distance terms
+  geofix_kabsch_weight: 1.0
+  geofix_pairdist_weight: 1.0
+  geofix_tau: 200
+
+generation:
+  eval_every: 20
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/bbb_geofix
+  save_every: 50

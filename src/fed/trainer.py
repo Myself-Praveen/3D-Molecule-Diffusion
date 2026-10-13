@@ -25,7 +25,11 @@ logger = logging.getLogger(__name__)
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.models.flow import flow_interpolate
-from src.objectives import diversity_regularizer, x0_valence_penalty
+from src.objectives import (
+    diversity_regularizer,
+    x0_geometry_consistency,
+    x0_valence_penalty,
+)
 from src.training_utils import min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
 
@@ -195,6 +199,8 @@ class LocalTrainer:
         valence_renorm_live = bool(
             self.cfg["training"].get("valence_renorm_live", False)
         )
+        # Task 2 geometry-consistency switch (default off; mirrors train.py).
+        geofix = bool(self.cfg["training"].get("geofix", False))
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
 
@@ -303,6 +309,19 @@ class LocalTrainer:
                 tau=int(self.cfg["training"].get("valence_tau", 200)),
                 objective=self.objective,
                 renorm_live=valence_renorm_live,
+            )
+        # Task 2 geometry-consistency terms (see x0_geometry_consistency).
+        if geofix:
+            loss = loss + x0_geometry_consistency(
+                noise_pred, noisy_pos, t, batch_data.batch,
+                target_pos=batch_data.pos,
+                alpha_bars=self.coord_ddpm.alpha_bars,
+                lambda_kabsch=float(self.cfg["training"].get(
+                    "geofix_kabsch_weight", 1.0)),
+                lambda_pairdist=float(self.cfg["training"].get(
+                    "geofix_pairdist_weight", 1.0)),
+                tau=int(self.cfg["training"].get("geofix_tau", 200)),
+                objective=self.objective,
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(

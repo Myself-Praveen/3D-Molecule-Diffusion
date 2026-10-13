@@ -26,7 +26,12 @@ from src.fed.trainer import TYPE_TO_Z, extract_cond
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.models.flow import flow_interpolate
-from src.objectives import diversity_regularizer, full_pair_index, x0_valence_penalty
+from src.objectives import (
+    diversity_regularizer,
+    full_pair_index,
+    x0_geometry_consistency,
+    x0_valence_penalty,
+)
 from src.training_utils import EMA, build_warmup_cosine_scheduler, min_snr_weight, rotate_batch
 from src.utils.graph import build_knn_graph
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -284,6 +289,12 @@ def train_diffusion(
     lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
     # §13.14 ablation switch: renormalize the λ₂ demand side over live classes.
     valence_renorm_live = bool(train_cfg.get("valence_renorm_live", False))
+    # Task 2 (§15 item 10): gated rotation-invariant geometry-consistency terms.
+    # Default off, so every pre-existing arm is bit-for-bit unchanged.
+    geofix = bool(train_cfg.get("geofix", False))
+    geofix_kabsch = float(train_cfg.get("geofix_kabsch_weight", 1.0))
+    geofix_pairdist = float(train_cfg.get("geofix_pairdist_weight", 1.0))
+    geofix_tau = int(train_cfg.get("geofix_tau", 200))
     lambda_diversity = float(train_cfg.get("diversity_loss_weight", 0.0))
     # Tier 2.2: bond-head supervision weight (0 = off; heads then stay at
     # init and eval keeps inferring bonds from distances as before).
@@ -342,6 +353,18 @@ def train_diffusion(
                 raise ValueError(
                     f"Resume config mismatch for training.valence_renorm_live: "
                     f"checkpoint={resume_renorm} vs current={valence_renorm_live}. "
+                    f"Refusing to resume."
+                )
+            # Task 2: the geometry-consistency terms change the objective the
+            # weights saw, so they carry the same hazard as the renorm switch.
+            resume_geofix = bool(
+                resume_state.get("config", {}).get("training", {})
+                .get("geofix", False)
+            )
+            if resume_geofix != geofix:
+                raise ValueError(
+                    f"Resume config mismatch for training.geofix: "
+                    f"checkpoint={resume_geofix} vs current={geofix}. "
                     f"Refusing to resume."
                 )
             model.load_state_dict(resume_state["model_state_dict"])
@@ -543,6 +566,19 @@ def train_diffusion(
                     tau=int(train_cfg.get("valence_tau", 200)),
                     objective=objective,
                     renorm_live=valence_renorm_live,
+                )
+            # Task 2 geometry-consistency terms: rotation-invariant shape loss
+            # (Kabsch-aligned MSE) plus an explicit interatomic-distance loss,
+            # both on the denoised x0 and gated to low noise.
+            if geofix:
+                loss = loss + x0_geometry_consistency(
+                    noise_pred, noisy_pos, t, batch_data.batch,
+                    target_pos=batch_data.pos,
+                    alpha_bars=coord_ddpm.alpha_bars,
+                    lambda_kabsch=geofix_kabsch,
+                    lambda_pairdist=geofix_pairdist,
+                    tau=geofix_tau,
+                    objective=objective,
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(

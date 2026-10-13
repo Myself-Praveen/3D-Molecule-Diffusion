@@ -203,6 +203,130 @@ def soft_valence_penalty(
     return violation.square().mean()
 
 
+def _kabsch_rotation(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Best-fit rotation ``R`` minimising ``||pred @ R − target||`` (3×3).
+
+    Both inputs must already be centred — centring *is* the translation half of
+    the rigid alignment. Degenerate cases are guarded: a reflection is excluded
+    by flipping the sign of the smallest singular value, and an exactly
+    singular covariance keeps the non-reflected branch instead of yielding a
+    non-orthogonal matrix.
+    """
+    cov = pred.transpose(0, 1) @ target                    # 3×3
+    u, _, vh = torch.linalg.svd(cov)
+    # maximise tr(R^T cov) ⇒ R = U·diag(1,1,det(U V^T))·V^T (Kabsch), where the
+    # determinant sign forces a proper rotation rather than a reflection.
+    d = torch.sign(torch.linalg.det(u @ vh))
+    d = torch.where(d.abs() < 1e-6, torch.ones_like(d), d)
+    ones = torch.ones_like(d)
+    return u @ torch.diag(torch.stack([ones, ones, d])) @ vh
+
+
+def kabsch_aligned_mse(
+    pred: torch.Tensor, target: torch.Tensor, batch: torch.Tensor,
+) -> torch.Tensor:
+    """Per-molecule coordinate MSE after optimal rigid-body alignment.
+
+    Rationale (progress.md §15 item 10): the plain per-atom loss also charges
+    the model for the *orientation* of the target, but at low noise that
+    orientation is only weakly determined by ``x_t`` — most of it lives in the
+    particular noise realisation. The cheapest way to reduce such a loss is
+    therefore to predict a rotationally *averaged* (i.e. looser) geometry
+    rather than the true one. Aligning each molecule first removes that
+    unlearnable component, leaving a loss on the shape alone — which is what
+    the connectivity ruler actually measures.
+    """
+    total = pred.new_zeros(())
+    n_atoms = 0
+    for g in torch.unique(batch):
+        idx = torch.where(batch == g)[0]
+        p, q = pred[idx], target[idx]
+        p = p - p.mean(dim=0, keepdim=True)
+        q = q - q.mean(dim=0, keepdim=True)
+        # Degenerate/diatomic fragments cannot define a 3-D rotation.
+        if p.shape[0] >= 3:
+            p = p @ _kabsch_rotation(p, q)
+        total = total + (p - q).square().sum()
+        n_atoms += int(p.shape[0])
+    return total / max(n_atoms, 1)
+
+
+def pairwise_distance_loss(
+    pred: torch.Tensor, target: torch.Tensor, pair_index: torch.Tensor,
+) -> torch.Tensor:
+    """MSE between interatomic distances of the prediction and the target.
+
+    Invariant to rotation and translation by construction, so no alignment is
+    needed, and it states the quantity the connectivity metrics score
+    (bond-length windows) explicitly in the objective instead of leaving it
+    implicit in a per-atom L2.
+    """
+    d_pred = (pred[pair_index[0]] - pred[pair_index[1]]).norm(dim=-1)
+    d_true = (target[pair_index[0]] - target[pair_index[1]]).norm(dim=-1)
+    return F.mse_loss(d_pred, d_true)
+
+
+def x0_geometry_consistency(
+    noise_pred: torch.Tensor,
+    noisy_pos: torch.Tensor,
+    t: torch.Tensor,
+    batch: torch.Tensor,
+    target_pos: torch.Tensor,
+    alpha_bars: torch.Tensor,
+    lambda_kabsch: float = 1.0,
+    lambda_pairdist: float = 1.0,
+    tau: int = 200,
+    objective: str = "eps",
+) -> torch.Tensor:
+    """Gated shape-aware terms on the denoised ``x0`` (Task 2).
+
+    Both terms follow ``x0_valence_penalty``'s contract: they act on the
+    model's prediction (so geometry, not the type head, absorbs them) and are
+    gated to ``t < tau`` because x0 error is amplified at high noise while fine
+    geometry is decided at low noise. Molecules whose x0 estimate is non-finite
+    are dropped rather than propagated — the same rule the samplers apply.
+    Weights default to 1.0 but the caller only invokes this when the gated
+    ``training.geofix`` flag is on, so every existing arm is unchanged.
+    """
+    zero = torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
+    if lambda_kabsch <= 0.0 and lambda_pairdist <= 0.0:
+        return zero
+    gate = (t < tau)
+    if not bool(gate.any()):
+        return zero
+    with torch.no_grad():
+        keep = gate[batch]
+    x0_pred = x0_from_prediction(
+        noise_pred, noisy_pos, t, batch,
+        alpha_bars=alpha_bars, objective=objective,
+    )[keep]
+    target = target_pos[keep]
+    sub_batch = batch[keep]
+    _, remap = torch.unique(sub_batch, return_inverse=True)
+
+    # Drop whole molecules containing any non-finite x0 entry.
+    atom_ok = torch.isfinite(x0_pred).all(dim=-1)
+    bad = torch.zeros(int(remap.max().item()) + 1, dtype=torch.bool,
+                      device=x0_pred.device)
+    bad.index_add_(0, remap, ~atom_ok)
+    good = ~bad[remap]
+    if not bool(good.all()):
+        if not bool(good.any()):
+            return zero
+        x0_pred, target, sub_batch = x0_pred[good], target[good], sub_batch[good]
+        _, remap = torch.unique(sub_batch, return_inverse=True)
+
+    loss = zero
+    if lambda_kabsch > 0.0:
+        loss = loss + lambda_kabsch * kabsch_aligned_mse(x0_pred, target, remap)
+    if lambda_pairdist > 0.0:
+        pair_index = full_pair_index(remap)
+        if pair_index.numel() > 0:
+            loss = loss + lambda_pairdist * pairwise_distance_loss(
+                x0_pred, target, pair_index)
+    return loss
+
+
 def molecule_pooling(h: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
     """Mean-pool atom embeddings into one vector per molecule."""
     num_graphs = int(batch.max().item()) + 1

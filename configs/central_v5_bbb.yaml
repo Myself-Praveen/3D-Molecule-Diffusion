@@ -1,0 +1,101 @@
+# V5 BBB: the V4-eps architecture (the arm that produced QM9's 62.2%
+# validity / 54.4% ConnV) on the BBBP dataset, with the BBB recipe's
+# conditioning and valence terms. Plan workstream E1 — hypothesis: the
+# architecture that fixes geometry on QM9 (self-conditioning, multi-scale
+# kNN, coordinate refinement, EMA, min-SNR) transfers to BBBP, where every
+# objective-side lever has already been excluded (progress.md §15 items
+# 3/4/13).
+#
+# DELIBERATE DEVIATIONS FROM THE PLAN'S DRAFT (each for a measured reason):
+#   1. epochs 7700 -> 3900. The plan's draft said "7700 x batch 32 = same
+#      200k-step budget as bbb_full" — that arithmetic is wrong: BBBP has
+#      1628 train rows, so batch 32 gives ~51 steps/epoch and 7700 epochs
+#      would be ~393k steps (2x budget, confounding the comparison).
+#      3900 x 51 ~= 199k steps, matching bbb_full's 7700 x 26 ~= 200k.
+#   2. bond_loss_weight omitted (0.0). The plan copied it from the QM9 V4
+#      config, but BBBP Data carries no edge_index (keys: pos, z, qed,
+#      logp, tpsa, mw, smiles, y) — train.py's bond head reads
+#      batch_data.edge_index and would AttributeError in epoch 1. The bond
+#      head is QM9-specific supervision, not part of the architecture
+#      hypothesis under test; keeping it off also keeps the arm a clean
+#      "V4 architecture + BBBP" transfer.
+#   3. lr 2e-4 (the V4/256-dim recipe) instead of the bbb_full 3e-4, which
+#      was tuned for the 128/6 model; warmup 20 epochs spans the early
+#      instability window at the larger capacity.
+#
+# Budget/schedule notes: cosine LR spans the whole 3900-epoch budget;
+# patience == epochs keeps early stopping disabled (bbb recipe); save_every
+# 200 -> 19 periodic checkpoints (~2.5 GB total at ~65 MB each with Adam
+# state). Resume: --resume --run_epochs N (fresh schedule guard: this run
+# owns checkpoints/central_v5_bbb).
+#
+#   OMP_NUM_THREADS=8 .venv/bin/python train.py --config configs/central_v5_bbb.yaml
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  cond_dim: 32
+  num_cond_classes: 2
+  use_attention: true
+  # Tier 2 (docs/recommendation.md) — the V4-eps combination
+  self_condition: true          # 2.1 (50% train dropout)
+  coord_refine_layers: 2        # 2.4 (zero-init: identity at init)
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]  # 2.3 (one per layer)
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine              # V4 recipe (bbb_full used linear)
+  beta_start: 1.0e-4            # ignored under cosine, kept for compat
+  beta_end: 0.02
+  objective: eps                # DDPM noise prediction
+
+training:
+  epochs: 3900                  # ~199k steps at batch 32 (see header note 1)
+  batch_size: 32                # 256-dim model on CPU
+  lr: 2.0e-4
+  warmup_epochs: 20
+  grad_clip_norm: 5.0           # required at escalated capacity (geo_esc lesson)
+  weight_decay: 1.0e-5
+  kNN: 8                        # legacy per-call graph (knn_schedule overrides per layer)
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0      # bbb recipe (V4-QM9 runs 0.0)
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01   # bbb recipe
+  patience: 3900                # early stopping disabled (bbb recipe)
+  # Tier 1 opt-ins (default-off keys)
+  ema_decay: 0.9999
+  ema_warmup_steps: 2000
+  min_snr_gamma: 5.0
+  rotation_augment_prob: 0.5
+  # bond_loss_weight: intentionally absent (see header note 2 — BBBP has no
+  # edge_index, and the bond head is QM9-specific supervision)
+
+generation:
+  eval_every: 100               # 39 quick_valid probes over the budget
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/central_v5_bbb   # isolated: never clobbers bbb_full etc.
+  save_every: 200

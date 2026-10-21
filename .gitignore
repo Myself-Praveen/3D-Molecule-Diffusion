@@ -19,4 +19,5 @@ logs/*
 .idea/
 .vscode/
 P1_5.pdf
-P1_5.pdf:Zone.Identifier
+P1_5.pdf:Zone.Identifier# project doc tree (AsciiDoc + generated assets), rendered to build/
+doc/build/

@@ -219,3 +219,144 @@ def full_perception(mol: Chem.Mol | None) -> Chem.Mol | None:
     mol, _ = perceive_bond_orders(mol)
     mol, _ = assign_stereochemistry(mol)
     return mol
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: geometry QA
+# ---------------------------------------------------------------------------
+
+def bond_length_deviation(mol: Chem.Mol | None) -> dict[str, float]:
+    """How far the 3D geometry sits from covalent-norm bond lengths.
+
+    This is the direct quantitative read on the failure the project has been
+    chasing. A denoiser that beats the trivial x0 predictor at every
+    timestep (progress.md §13.17) still produced "over-bonded soup" at 32.8
+    bonds/mol against ~19 real. Validity and ConnectedValidity say *whether*
+    the molecule is connected; this says whether its geometry is actually
+    right. A molecule can be sanitizable and single-fragment while having
+    every bond stretched 30% — which no chemist would recognise as the
+    compound drawn on paper.
+
+    Returns ``MeanBondStrainPct`` (mean |measured − ideal| / ideal, in %,
+    over bonds whose elements are known), ``MaxBondStrainPct``, and
+    ``n_bonds_measured``. ``None`` and bond-free input give 0.0 strain.
+    """
+    if mol is None or mol.GetNumBonds() == 0 or mol.GetNumConformers() == 0:
+        return {"MeanBondStrainPct": 0.0, "MaxBondStrainPct": 0.0,
+                "n_bonds_measured": 0}
+    conf = mol.GetConformer()
+    strains: list[float] = []
+    for bond in mol.GetBonds():
+        ideal = ideal_bond_length(bond, mol)
+        if ideal is None or ideal <= 0.0:
+            continue
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        pi, pj = conf.GetAtomPosition(i), conf.GetAtomPosition(j)
+        measured = ((pi.x - pj.x) ** 2 + (pi.y - pj.y) ** 2
+                    + (pi.z - pj.z) ** 2) ** 0.5
+        strains.append(100.0 * abs(measured - ideal) / ideal)
+    if not strains:
+        return {"MeanBondStrainPct": 0.0, "MaxBondStrainPct": 0.0,
+                "n_bonds_measured": 0}
+    return {
+        "MeanBondStrainPct": float(sum(strains) / len(strains)),
+        "MaxBondStrainPct": float(max(strains)),
+        "n_bonds_measured": len(strains),
+    }
+
+
+def strain_energy(mol: Chem.Mol | None) -> float | None:
+    """MMFF94 steric energy in kcal/mol (UFF fallback), or ``None``.
+
+    An independent geometry check that does not assume the covalent-radius
+    model the bond builder already uses — MMFF94 scores the full force field
+    including angles, torsions and non-bonded contacts, so a strained ring
+    or a clash between non-bonded atoms shows up here even when every bond
+    length is correct.
+
+    Reported as an absolute energy for a single conformer. It is meaningful
+    for *ranking* geometries and for flagging pathological output (values in
+    the hundreds of kcal/mol indicate a real clash), not as a free energy.
+    Returns ``None`` when no force field can be constructed — which is itself
+    the signal for a molecule MMFF cannot type.
+    """
+    if mol is None or mol.GetNumAtoms() == 0 or mol.GetNumConformers() == 0:
+        return None
+    try:
+        props = AllChem.MMFFGetMoleculeProperties(mol)
+        ff = (AllChem.MMFFGetMoleculeForceField(mol, props)
+              if props is not None else None)
+    except Exception:
+        ff = None
+    if ff is None:
+        try:
+            ff = AllChem.UFFGetMoleculeForceField(mol)
+        except Exception:
+            return None
+    try:
+        return float(ff.CalcEnergy())
+    except Exception:
+        return None
+
+
+def idealize_bond_lengths(mol: Chem.Mol | None, iterations: int = 200,
+                          step: float = 0.5) -> Chem.Mol | None:
+    """Snap bond lengths toward covalent norms, preserving connectivity.
+
+    A geometry-repair step that is deliberately narrow. It moves atoms along
+    existing bond vectors so each bond approaches its ideal length; it never
+    adds, removes or reorders a bond, so Validity and ConnectedValidity are
+    invariant by construction — the same structural guarantee
+    ``relax_molecule`` lacks (progress.md §13.13 showed MMFF relaxation cannot
+    rescue an invalid molecule, because the bond graph is fixed before
+    relaxation runs and never re-derived).
+
+    What this *can* do: take a molecule whose connectivity is already correct
+    but whose coordinates are off (the "coordinate precision, not clumping"
+    diagnosis in §9) and pull it toward chemically realistic bond lengths.
+    What it *cannot* do: fix a wrong bond graph. A fragment soup stays a
+    fragment soup, and that is the correct behaviour — the honest ruler must
+    keep scoring it as disconnected.
+
+    Returns a copy with a single conformer; ``None`` for ``None`` or for
+    input with no coordinates.
+    """
+    if mol is None or mol.GetNumConformers() == 0 or mol.GetNumBonds() == 0:
+        return mol
+    work = Chem.Mol(mol)
+    conf = work.GetConformer()
+    n = work.GetNumAtoms()
+
+    for _ in range(max(1, int(iterations))):
+        disp = np.zeros((n, 3), dtype=float)
+        moved = 0.0
+        for bond in work.GetBonds():
+            ideal = ideal_bond_length(bond, work)
+            if ideal is None or ideal <= 0.0:
+                continue
+            i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            pi = np.array([conf.GetAtomPosition(i).x,
+                           conf.GetAtomPosition(i).y,
+                           conf.GetAtomPosition(i).z])
+            pj = np.array([conf.GetAtomPosition(j).x,
+                           conf.GetAtomPosition(j).y,
+                           conf.GetAtomPosition(j).z])
+            vec = pj - pi
+            length = float(np.linalg.norm(vec))
+            if length < 1e-8:
+                continue
+            # Fraction of the error to close this pass (damped to stay stable
+            # when an atom participates in several bonds at once).
+            delta = step * (length - ideal) / length
+            disp[i] += delta * vec
+            disp[j] -= delta * vec
+            moved = max(moved, abs(delta) * length)
+        if moved < 1e-6:
+            break
+        for k in range(n):
+            p = conf.GetAtomPosition(k)
+            conf.SetAtomPosition(k, Chem.rdGeometry.Point3D(
+                p.x + float(disp[k, 0]),
+                p.y + float(disp[k, 1]),
+                p.z + float(disp[k, 2])))
+    return work

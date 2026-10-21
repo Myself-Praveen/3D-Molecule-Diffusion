@@ -382,6 +382,27 @@ def apply_qed_filter(
     return filtered, dropped
 
 
+def apply_veber_filter(
+    mols: Sequence[Chem.Mol | None],
+) -> tuple[list[Chem.Mol | None], int]:
+    """Rejection filter on the Veber rules (plan workstream C2).
+
+    Returns ``(filtered, n_dropped)`` where Veber-failing molecules (and
+    ``None`` entries) are replaced by ``None`` — positions are kept so
+    per-sample rates stay honest. Because the filtered table's ``Veber%`` is
+    100 by construction, the caller must record ``veber_pass_rate`` *before*
+    calling this and report it as ``Veber_filtered%`` so the true pass rate
+    stays visible next to it.
+    """
+    filtered: list[Chem.Mol | None] = []
+    dropped = 0
+    for m in mols:
+        keep = m is not None and veber_pass(m)
+        filtered.append(m if keep else None)
+        dropped += 0 if keep else 1
+    return filtered, dropped
+
+
 # ---------------------------------------------------------------------------
 # MOSES metrics
 # ---------------------------------------------------------------------------
@@ -617,19 +638,21 @@ def lipinski_pass_rate(mols) -> float:
     return ok / len(valid)
 
 
+def veber_pass(m: Chem.Mol) -> bool:
+    """Veber rules for one molecule: tPSA ≤ 140 Å², rotatable bonds ≤ 10."""
+    try:
+        return (rdMolDescriptors.CalcTPSA(m) <= 140
+                and rdMolDescriptors.CalcNumRotatableBonds(m) <= 10)
+    except Exception:
+        return False
+
+
 def veber_pass_rate(mols) -> float:
-    """Fraction passing Veber rules (tPSA ≤ 140, rotatable bonds ≤ 10)."""
+    """Fraction of valid molecules passing Veber rules (tPSA ≤ 140, rot ≤ 10)."""
     valid = [m for m in mols if m is not None]
     if not valid:
         return 0.0
-    ok = 0
-    for m in valid:
-        try:
-            if (rdMolDescriptors.CalcTPSA(m) <= 140
-                    and rdMolDescriptors.CalcNumRotatableBonds(m) <= 10):
-                ok += 1
-        except Exception:
-            continue
+    ok = sum(1 for m in valid if veber_pass(m))
     return ok / len(valid)
 
 

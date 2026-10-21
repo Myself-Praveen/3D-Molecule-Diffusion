@@ -22,8 +22,10 @@ from src.utils.evaluation import (
     TOLERANCE_MATRIX,
     _add_bonds_from_distance,
     apply_qed_filter,
+    apply_veber_filter,
     coords_and_types_to_mol,
     get_bond_tolerance,
+    veber_pass_rate,
 )
 
 
@@ -194,6 +196,36 @@ class TestQedFilter:
 
 
 # ---------------------------------------------------------------------------
+# Veber rejection filter (plan C2)
+# ---------------------------------------------------------------------------
+
+class TestVeberFilter:
+    def test_pass_and_drop(self):
+        # Aspirin: TPSA 63, 2 rotatable bonds -> passes Veber.
+        # Eicosane (C20): TPSA 0 but 17 rotatable bonds -> fails Veber.
+        mols = [_mol("CC(=O)OC1=CC=CC=C1C(=O)O"),
+                _mol("CCCCCCCCCCCCCCCCCCCC")]
+        out, dropped = apply_veber_filter(mols)
+        assert out[0] is not None and out[1] is None
+        assert dropped == 1
+
+    def test_positions_and_none_counted(self):
+        mols = [None, _mol("CCO")]
+        out, dropped = apply_veber_filter(mols)
+        assert len(out) == 2 and out[0] is None and out[1] is not None
+        assert dropped == 1  # None entries count as dropped (apply_qed_filter parity)
+
+    def test_filtered_rate_stays_visible(self):
+        """Veber_filtered% (pre-filter) must survive the filter's 100%."""
+        mols = [_mol("CC(=O)OC1=CC=CC=C1C(=O)O"),
+                _mol("CCCCCCCCCCCCCCCCCCCC")]
+        before = veber_pass_rate(mols)            # 50% raw pass rate
+        out, _ = apply_veber_filter(mols)
+        assert veber_pass_rate(out) == 1.0        # filtered table: trivially 100
+        assert before == 0.5                      # the honest number survives
+
+
+# ---------------------------------------------------------------------------
 # Type-sampling temperature
 # ---------------------------------------------------------------------------
 
@@ -251,12 +283,17 @@ class TestCliWiring:
         import generate_and_eval as g
         src = inspect.getsource(g)
         for flag in ("--type_temperature", "--min_fragment_atoms", "--min_qed",
-                     "--bond_tolerance", "--max_bonds_ratio", "--perceive_bonds"):
+                     "--bond_tolerance", "--max_bonds_ratio", "--perceive_bonds",
+                     "--veber_filter"):
             assert flag in src, f"missing CLI flag {flag}"
         # The flags must actually reach the metric code paths.
         assert "type_temperature=args.type_temperature" in src
         assert "min_fragment_atoms=args.min_fragment_atoms" in src
         assert "apply_qed_filter" in src
+        # Veber filter C2: reach-through + honest pre-filter rate.
+        assert "apply_veber_filter" in src
+        assert "veber_pass_rate(all_mols)" in src
+        assert 'metrics["Veber_filtered%"]' in src
         # Bond-perception chain (plan A1–A4): reach-through + provenance.
         assert "bond_tolerance=args.bond_tolerance" in src
         assert "max_bonds_ratio=args.max_bonds_ratio" in src

@@ -125,6 +125,12 @@ def main() -> None:
     parser.add_argument("--min_qed", type=float, default=0.0,
                         help="Rejection filter: replace molecules with QED below "
                              "this by invalid (0 = off; try 0.5 for drug-likeness)")
+    parser.add_argument("--veber_filter", action="store_true",
+                        help="Rejection filter C2: drop molecules failing Veber "
+                             "(TPSA <= 140, rotatable bonds <= 10); the PRE-filter "
+                             "pass rate is still reported as Veber_filtered%% so "
+                             "the filtered table's Veber%% (100 by construction) "
+                             "cannot launder the raw one")
     parser.add_argument("--guidance_scale", type=float, default=2.0,
                         help="Classifier-free guidance strength w (Phase 6; "
                              "ignored unless the checkpoint has conditioning "
@@ -312,6 +318,21 @@ def main() -> None:
         print(f"QED filter (>= {args.min_qed:.2f}): dropped {n_qed_dropped} "
               f"of {n_qed_dropped + sum(m is not None for m in all_mols)} molecules")
 
+    # Veber filter (plan workstream C2): drop Veber-failing molecules, but
+    # keep the PRE-filter pass rate as Veber_filtered% — with the filter on
+    # the table's Veber% is 100 by construction and the honest number must
+    # stay visible next to it (same raw-vs-filtered rationale as --min_qed).
+    veber_before = None
+    if args.veber_filter:
+        from src.utils.evaluation import apply_veber_filter, veber_pass_rate
+
+        veber_before = veber_pass_rate(all_mols)
+        all_mols, n_veber_dropped = apply_veber_filter(all_mols)
+        print(f"Veber filter (TPSA <= 140, rot <= 10): dropped "
+              f"{n_veber_dropped} of "
+              f"{n_veber_dropped + sum(m is not None for m in all_mols)} "
+              f"molecules (pre-filter pass rate {veber_before * 100.0:.1f}%)")
+
     # Evaluate — BBB oracle resolution: explicit --bbb_oracle flag first,
     # else the checkpoint config's bbb_classifier.checkpoint, else the
     # --config YAML's. Sweep/ablation runners never pass the flag, so this
@@ -344,6 +365,10 @@ def main() -> None:
               f"(val AUROC {bbb_ckpt.get('val_auroc', float('nan')):.4f})")
     metrics = evaluate(all_mols, train_smiles, train_mols,
                        bbb_classifier=bbb_classifier)
+    if args.veber_filter:
+        # Pre-filter pass fraction — computed before apply_veber_filter and
+        # reported alongside the (trivially 100) filtered Veber%.
+        metrics["Veber_filtered%"] = veber_before * 100.0
     print("\n--- RAW (as generated) ---")
     print_metrics(metrics)
 
@@ -381,6 +406,10 @@ def main() -> None:
         relaxed = [relax_molecule(m) for m in all_mols]
         metrics_relaxed = evaluate(relaxed, train_smiles, train_mols,
                                    bbb_classifier=bbb_classifier)
+        if args.veber_filter:
+            # Same scalar as the raw row: the filter decision is made at raw
+            # time; relaxation does not un-filter the batch.
+            metrics_relaxed["Veber_filtered%"] = veber_before * 100.0
         print("\n--- RELAXED (MMFF94/UFF post-hoc; report alongside raw) ---")
         print_metrics(metrics_relaxed)
         if gate is not None:

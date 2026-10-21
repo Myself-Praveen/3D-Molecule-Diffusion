@@ -33,3 +33,4 @@ outputs/figures/build/
 # large; never commit them.
 **.venv/
 */.venv/
+deploy-venv/

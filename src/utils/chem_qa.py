@@ -555,3 +555,82 @@ def pains_free_rate(mols: Sequence[Chem.Mol | None]) -> float:
         return 0.0
     clean = sum(1 for m in valid if not pains_matches(m))
     return 100.0 * clean / len(valid)
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: applicability domain
+# ---------------------------------------------------------------------------
+
+# Morgan radius 2 / 2048 bits — the same fingerprint family novelty, SNN and
+# IntDiv use (src/utils/evaluation.py), so similarities are comparable across
+# metrics rather than a second opinion from a different representation.
+_FP_RADIUS = 2
+_FP_BITS = 2048
+
+# A generated molecule is "in domain" when its nearest training neighbour is
+# at least this Tanimoto. 0.4 is a deliberately permissive first-pass: it
+# excludes only molecules that share essentially no substructure with
+# anything the model saw. Tighten per assay, not globally.
+IN_DOMAIN_THRESHOLD = 0.4
+
+
+def _morgan(mol: Chem.Mol):
+    return AllChem.GetMorganFingerprintAsBitVect(mol, _FP_RADIUS, nBits=_FP_BITS)
+
+
+def applicability_domain(
+    mols: Sequence[Chem.Mol | None],
+    train_mols: Sequence[Chem.Mol],
+    threshold: float = IN_DOMAIN_THRESHOLD,
+) -> dict[str, float]:
+    """Nearest-neighbour similarity of each generated molecule to training data.
+
+    Answers the question every lab asks before trusting a generated
+    candidate: *is this inside the domain the model learned, or an
+    extrapolation?* A learned oracle scores its own training distribution
+    most reliably, so a molecule far from anything the model saw is exactly
+    where BBB%, QED and the ADMET proxies below become fiction — regardless
+    of how good the individual numbers look.
+
+    Returns:
+
+    - ``InDomain%`` — % of valid molecules whose nearest training neighbour
+      reaches ``threshold`` (the gate; over valid molecules only).
+    - ``MeanMaxTanimoto`` — mean nearest-neighbour Tanimoto. This is the
+      same quantity ``SNN`` reports in the MOSES suite; it is recomputed
+      here so this module is usable standalone (e.g. the readiness gate on
+      an SDF without a full ``evaluate()`` run) at the cost of one extra
+      fingerprint pass when both are requested.
+    - ``PctBeyond40`` / ``PctBeyond60`` — fixed reference cuts at Tanimoto
+      0.4 / 0.6 so runs are comparable across thresholds without
+      recomputing.
+
+    Empty input or an empty training set returns zeroes rather than raising:
+    "no reference" must not crash the report that would have shown it.
+    """
+    zero = {"InDomain%": 0.0, "MeanMaxTanimoto": 0.0,
+            "PctBeyond40": 0.0, "PctBeyond60": 0.0}
+    valid = [m for m in mols if m is not None]
+    if not valid or not train_mols:
+        return zero
+
+    train_fps = [_morgan(m) for m in train_mols]
+    max_sims: list[float] = []
+    for mol in valid:
+        try:
+            fp = _morgan(mol)
+        except Exception:
+            continue
+        sims = DataStructs.BulkTanimotoSimilarity(fp, train_fps)
+        max_sims.append(max(sims) if sims else 0.0)
+    if not max_sims:
+        return zero
+    return {
+        "InDomain%": 100.0 * sum(1 for s in max_sims if s >= threshold)
+                      / len(max_sims),
+        "MeanMaxTanimoto": float(sum(max_sims) / len(max_sims)),
+        "PctBeyond40": 100.0 * sum(1 for s in max_sims if s >= 0.40)
+                       / len(max_sims),
+        "PctBeyond60": 100.0 * sum(1 for s in max_sims if s >= 0.60)
+                       / len(max_sims),
+    }

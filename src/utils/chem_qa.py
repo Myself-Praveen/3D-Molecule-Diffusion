@@ -47,7 +47,8 @@ from typing import Sequence
 
 import numpy as np
 from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem, Descriptors, rdDetermineBonds, rdMolDescriptors
+from rdkit.Chem import (AllChem, Descriptors, FilterCatalog, rdDetermineBonds,
+                        rdMolDescriptors)
 
 # Covalent radii (Cordero et al. 2008, Å) — same table the honest ruler uses,
 # duplicated as the ideal-bond-length reference for geometry QA.
@@ -360,3 +361,197 @@ def idealize_bond_lengths(mol: Chem.Mol | None, iterations: int = 200,
                 p.y + float(disp[k, 1]),
                 p.z + float(disp[k, 2])))
     return work
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: synthetic accessibility + PAINS
+# ---------------------------------------------------------------------------
+
+# Penalty weights for the complexity terms below. These follow the *structure*
+# of Ertl & Schffenhauer's synthetic-accessibility score (J. Cheminf. 2009):
+# start from a flat base and add penalties for features that make a target
+# hard to make, then rescale to 1-10 where 10 is easiest.
+#
+# They are NOT the published constants. The original score derives its main
+# term from fragment contributions fitted to a large catalogue of purchased
+# compounds, which we do not ship; substituting guessed fragment values
+# would produce a number that *looks* like a literature SA score but is not
+# comparable to it. The terms below are documented, monotone, and tested
+# against an ordering of real molecules a chemist would agree with - which is
+# what a triage gate needs. See synthetic_complexity_score's docstring, which
+# states this limitation in the same terms.
+_SA_BASE = 7.0
+_SA_PENALTIES = {
+    "size": 0.05,          # per heavy atom above 15
+    "ring": 0.35,          # per ring
+    "ring_size": 0.40,     # per ring of 8+ atoms (macrocycles are hard)
+    "stereo": 0.20,        # per defined stereocentre
+    "spiro_bridge": 0.55,  # per spiro or bridgehead atom
+    "heteroatom": 0.12,    # per heteroatom beyond the first
+    "rotatable": 0.05,     # per rotatable bond
+    "low_csp3": 1.20,      # all-aromatic penalty (flat molecules are hard)
+    "aromatic_ring": 0.10, # per aromatic ring (functionalisation cost)
+}
+
+
+def _ring_sizes(mol: Chem.Mol) -> list[int]:
+    """Sizes of all SSSR rings."""
+    try:
+        return [len(r) for r in mol.GetRingInfo().AtomRings()]
+    except Exception:
+        return []
+
+
+def _spiro_bridgehead_count(mol: Chem.Mol) -> int:
+    """Atoms that are spiro centres or bridgeheads.
+
+    Computed from the ring membership table rather than
+    ``rdMolDescriptors`` (absent in this RDKit build). A bridgehead atom
+    lies in two or more rings and has a ring neighbour in each; a spiro
+    atom lies in two rings sharing only that atom.
+    """
+    ri = mol.GetRingInfo()
+    rings = ri.AtomRings()
+    count = 0
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        in_rings = [set(r) for r in rings if idx in r]
+        if len(in_rings) < 2:
+            continue
+        # Spiro: some pair of rings shares ONLY this atom.
+        is_spiro = any(
+            in_rings[a] & in_rings[b] == {idx}
+            for a in range(len(in_rings))
+            for b in range(a + 1, len(in_rings))
+        )
+        if is_spiro:
+            count += 1
+            continue
+        # Bridgehead: in 2+ rings that share other atoms as well (i.e. a
+        # fused/caged system) and where the atom closes a ring - it has at
+        # least two ring neighbours inside one of those rings.
+        nbr_rings = [
+            {n for n in r if mol.GetBondBetweenAtoms(idx, n)}
+            for r in in_rings
+        ]
+        if any(len(s) > 1 for s in nbr_rings):
+            count += 1
+    return count
+
+
+def synthetic_complexity_score(mol: Chem.Mol | None) -> float | None:
+    """Self-contained 1-10 synthetic-accessibility proxy (10 = easiest).
+
+    **What this is not.** It is not the published Ertl & Schffenhauer SA
+    score. That score's dominant term comes from fragment contributions fitted
+    against a large catalogue of purchasable compounds, which this repo does
+    not ship. Guessing those fragment values would yield a number that looks
+    like a literature SA score while being incomparable to it - exactly the
+    kind of quiet fabrication this project's honest-ruler work exists to
+    prevent (progress.md §7, §13.13).
+
+    **What it is.** A transparent complexity proxy using the same family of
+    structural terms Ertl identified as driving synthesis difficulty - size,
+    ring count and macrocycles, stereocentres, spiro/bridgehead atoms,
+    heteroatom count, conformational flexibility, and flat aromatic
+    systems - with weights fixed in ``_SA_PENALTIES`` above and covered by
+    tests. It is rescaled to 1-10 so it is easy to read alongside the other
+    per-molecule metrics.
+
+    Use it to *rank and gate* candidates within this repo. Do not quote it as
+    an SA score, and do not compare its absolute values against published SA
+    thresholds. The PAINS check below is unaffected by this caveat: that is
+    RDKit's actual catalogue.
+
+    Returns ``None`` for ``None``/empty input.
+    """
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    n_heavy = mol.GetNumHeavyAtoms()
+    if n_heavy == 0:
+        return None
+
+    rings = _ring_sizes(mol)
+    # A ring counts as aromatic when every one of its atoms is aromatic.
+    try:
+        arom_rings = sum(
+            1 for ring in Chem.GetSymmSSSR(mol)
+            if all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring)
+        )
+    except Exception:
+        arom_rings = 0
+
+    hetero = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() not in (1, 6))
+    rot = rdMolDescriptors.CalcNumRotatableBonds(mol)
+    # DEFINED stereocentres only. CalcNumAtomStereoCenters counts *potential*
+    # centres, which scores an unspecified centre the same as an assigned one
+    # - it made lactic acid and L-lactic acid tie, contradicting both the
+    # chemistry (controlling a configuration is the synthesis cost; a
+    # racemate is the easy outcome) and the documented "per defined
+    # stereocentre" in _SA_PENALTIES above. FindMolChiralCenters reports the
+    # assignment code, so '?' = potential-but-unspecified is excluded.
+    try:
+        stereo = sum(
+            1 for _, code in Chem.FindMolChiralCenters(
+                mol, includeUnassigned=True, useLegacyImplementation=False)
+            if code != "?"
+        )
+    except Exception:
+        stereo = 0
+    spiro_bridge = _spiro_bridgehead_count(mol)
+    try:
+        fcsp3 = Descriptors.FractionCSP3(mol)
+    except Exception:
+        fcsp3 = 0.0
+
+    penalty = 0.0
+    penalty += _SA_PENALTIES["size"] * max(0, n_heavy - 15)
+    penalty += _SA_PENALTIES["ring"] * len(rings)
+    penalty += _SA_PENALTIES["ring_size"] * sum(1 for s in rings if s >= 8)
+    penalty += _SA_PENALTIES["stereo"] * stereo
+    penalty += _SA_PENALTIES["spiro_bridge"] * spiro_bridge
+    penalty += _SA_PENALTIES["heteroatom"] * max(0, hetero - 1)
+    penalty += _SA_PENALTIES["rotatable"] * rot
+    penalty += _SA_PENALTIES["aromatic_ring"] * arom_rings
+    if n_heavy >= 6 and fcsp3 < 0.05:
+        penalty += _SA_PENALTIES["low_csp3"]
+
+    score = _SA_BASE - penalty
+    return float(max(1.0, min(10.0, score)))
+
+
+def pains_matches(mol: Chem.Mol | None) -> list[str]:
+    """PAINS (Pan-Assay Interference Compounds) alerts that fire on ``mol``.
+
+    Returns the RDKit catalogue entry names, e.g. ``['rhod_sat_A(33)']``.
+    These are the Baell & Holloway PAINS-A/B/C filters shipped with RDKit,
+    so unlike the complexity score above this is the real published catalogue
+    and its names are directly comparable to the literature.
+
+    PAINS compounds give false-positive readouts in assay pipelines. A
+    generative model optimising against a learned oracle is *especially* prone
+    to rediscovering them, because an oracle rewards the same substructures an
+    assay is fooled by - so this check belongs in any "ready for a lab"
+    gate even when every other metric looks clean.
+    """
+    if mol is None or mol.GetNumAtoms() == 0:
+        return []
+    try:
+        params = FilterCatalog.FilterCatalogParams()
+        for name in ("PAINS_A", "PAINS_B", "PAINS_C"):
+            params.AddCatalog(getattr(
+                FilterCatalog.FilterCatalogParams.FilterCatalogs, name))
+        catalog = FilterCatalog.FilterCatalog(params)
+        entry = catalog.GetFirstMatch(mol)
+    except Exception:
+        return []
+    return [entry.GetDescription()] if entry is not None else []
+
+
+def pains_free_rate(mols: Sequence[Chem.Mol | None]) -> float:
+    """Fraction of valid molecules with no PAINS alert (over valid only)."""
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return 0.0
+    clean = sum(1 for m in valid if not pains_matches(m))
+    return 100.0 * clean / len(valid)

@@ -1,8 +1,8 @@
 # Project Progress & Rationale
 
 **Project:** Novel Molecular Generation using Graph GANs/Diffusion for BBB Permeability
-**Current Phase:** Phases 1–4 implemented; recommendation.md Tiers 0–3 implemented (V3 baseline: 62.2% validity, 99.2% uniq/novel)
-**Last Updated:** 24 Sep 2026 (CPU-only machine, `node1`)
+**Current Phase:** Phases 1–4 implemented; recommendation.md Tiers 0–3 implemented (V3 baseline: 62.2% validity, 99.2% uniq/novel); lab-readiness stack (stages 1–7) implemented and validated
+**Last Updated:** 21 Oct 2026 (CPU-only machine, `node1`)
 
 ---
 
@@ -379,6 +379,29 @@ The generated geometry tightens at the same time — `x0hat_NN_p50` at t=100 fal
 - `a072b36` Measure the λ₂ valence penalty's scale on real geometry (proposal, not applied)
 - `33676d5` Cap worker thread counts (54 threads on 36 cores was 18× slower than 24)
 - `b83cafa` Record the first post-relaunch results: trend closing, K-sweep noise-bound
+- `0326bd9` Launch the full 200k-step BBB budget now the undertraining test has crossed
+- `60f68de` Add the limitations section and refresh the stale future work
+- `fed80aa` Record corrected K-sweep IID re-run results + regenerated paper figures
+- `7e16960` Add the ConnV-LDAG diagnostics behind the full-budget BBB verdict
+- `180bd39` Run the λ₂ renorm arm and close the BBB headline with the full-budget eval
+- `bd66844` Automate the λ₂-renorm arm's acceptance steps so they survive the session
+- `cf2f7de` Drop an unverifiable line break before the new report table
+- `84d31b8` Record the λ₂-renorm ablation verdict: acceptance FAIL
+- `fd55561` Reproduce the recorded BBB negatives from the committed artifacts
+- `357e22e` Add a gated rotation-invariant objective arm for the BBB soup (geofix)
+- `936801f` Show guidance does control BBB% on the full-budget checkpoint
+- `9cf3440` Multi-arm guidance figures, geofix Table I row, K=7 recording, report updates
+- `892e6cb`/`917685b` Add rerun_k7_iid.sh — the fixed-partitioner K=7 re-run driver (two hashes: the same change after an attribution-cleanup history rewrite)
+- `3d1fc8f` Record K=7 iid seed 456: retrains cleanly under the fixed partitioner
+- `3b3c7d0` Record geofix verdict: FAIL, third excluded objective hypothesis
+- `cc8f651` Regenerate Figs 1-7 and Table I with the geofix row and corrected K=7
+- `75e80c9` Add bond-order perception + stereochemistry read-back (lab-readiness stage 1)
+- `80956ac` Add geometry QA: bond strain, force-field energy, bond idealization (stage 2)
+- `403dd7d` Add synthetic accessibility proxy + PAINS filter (stage 3)
+- `f1a63d1` Add applicability-domain gate (stage 4)
+- `daea294` Add ADMET proxies: ESOL solubility + liability structural alerts (stage 5)
+- `ff0eb7f` Add template retrosynthesis feasibility gate (stage 6)
+- `b228ce6` Add lab-readiness gate: six-stage verdict + eval flag (stage 7)
 
 ## 15. What's Next
 
@@ -474,3 +497,11 @@ The generated geometry tightens at the same time — `x0hat_NN_p50` at t=100 fal
    | **median** | **20.9** | **0.0** | **6.24** | **0.0** |
 
    **Median validity 20.9 with a 1.3–29.4 range (28.1 pts) is exactly why per-K means are not reportable** (§13.16, L4): same config, same fixed partitioner, same 50-round budget — only the seed moves — and validity swings by an order of magnitude. So the K-sweep reports **medians with the seed spread and no monotonicity claim**, as the brief requires. The robust result is unchanged and is the only one worth stating: **ConnV = 0.0 and BBB% = 0.0 for every seed at every K**, i.e. the over-bonded/fragmented-soup failure is independent of K, and K=7 stays a third excluded K hypothesis with K=1 as the centralized-equivalent control row.
+15. **Lab-readiness stack (stages 1–7) — DONE, and it refuses every current arm.** The negatives in items 3/4/13 (over-bonded soup, ConnV ≤ 1.5) motivated a feasibility stack around the model rather than another loss term (rationale in `src/utils/chem_qa.py`'s module docstring, which cites §15 items 3, 4, 13):
+
+   - **Stages 1–5** in `src/utils/chem_qa.py`: bond-order perception + stereochemistry read-back; geometry QA (covalent-radii bond strain, MMFF94/UFF strain energy, bond idealization); 1–10 complexity proxy (explicitly NOT the published Ertl SA — no fitted fragment table is shipped) + PAINS (RDKit's real Baell–Holloway catalogue); applicability domain (Morgan r2/2048 nearest-train Tanimoto, same fingerprint family as SNN); ADMET proxies (exact Delaney ESOL + auditable hERG/CYP3A4/P-gp/polyaromatic SMARTS alerts — heuristics, not predictors).
+   - **Stage 6** in `src/utils/retrosynthesis.py`: bounded template retrosynthesis (8 net transformations, 31 curated building blocks, 2-step horizon). Every product found is recorded; the pool cap bounds forward growth only — an early version discarded *discovered* routes to a 400-intermediate alphabetical cut, which the stage-6 tests pin as a regression (along with a template-subset mislabelling bug and non-canonical block keys KeyErrors).
+   - **Stage 7** in `src/utils/lab_gate.py` + `scripts/lab_readiness_gate.py` + `--lab_gate` in `generate_and_eval.py`: six criteria → one PASS/FAIL/INCOMPLETE verdict. Sentinel −1.0 for "not measurable" (needs 3D coords or a training set) → criterion **SKIP**; any SKIP without a FAIL → INCOMPLETE, so missing evidence never passes; gate metric keys are disjoint from `evaluate()`'s (regression-tested) so the merge cannot clobber a MOSES number; thresholds live in `DEFAULT_CRITERIA` as data with per-criterion rationales. With `--relax`, the gate runs on **both** tables so the raw and relaxed LaTeX rows keep identical key sets (47/47 verified) and the two verdicts can be compared.
+   - **Calibration measured, not assumed:** the 2-step route horizon reaches only **0.74%** of the 1628 real BBBP training compounds (QM9-size molecules route near-100%), so the routes criterion is *relative* — `RouteFeasibleRatio% ≥ 50`, i.e. half the routability real chemistry achieves under the identical bounded search. An absolute ≥50% threshold would have failed purchasable drugs themselves.
+   - **Validated end-to-end (stage 8)** on the three committed BBB evals, both standalone (exit codes 0/1/2) and through one `generate_and_eval.py --lab_gate --relax` run (exit 0): full 200k **FAIL** (perception 0.72%, strain 12.19, in-domain 0.00, routes 0.00), geofix **FAIL** (0.96 / 14.98 / 0.00 / 0.00), λ₂-renorm **FAIL** (1.05 / 19.59 / 0.00 / 0.00). The gate differentiates where the arms differ — geometry passes for full/geofix but fails for renorm (mean MMFF 1774 vs ~987 kcal/mol) — while PAINS and ESOL pass everywhere, and perception/in-domain fail exactly where the soup says they should (`DetermineBondOrders` cannot solve the multi-fragment outputs; nearest-train Tanimoto ~0.13 vs the 0.4 floor). Relaxation flips only the geometry criterion (16.3 → 2.35% in the `--lab_gate` smoke run) and the gate reports it without letting it mask the raw verdict — consistent with L3. `lab_gate.json` written into each eval dir.
+   - **Docs (stage 9):** `docs/lab_readiness.md` (roadmap/status), this item, and a report section in `docs/project_report.tex` (six-stage table, criteria, three-arm validation) + a Future Work item. Full suite: **354 passed** across 7 lab-readiness test files among the whole suite. The gate's next run is conditional on the sampler work: re-run `scripts/lab_readiness_gate.py` once connected molecules exist.

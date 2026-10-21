@@ -670,7 +670,7 @@ Unconditioned generation achieves \textbf{24.8\%} BBB permeability on 471 valid 
 \section{Testing and Validation}
 % ═══════════════════════════════════════════════════════════════
 
-The test suite (\texttt{tests/}) contains \textbf{108+ tests} covering:
+The test suite (\texttt{tests/}) contains \textbf{354 tests} covering:
 
 \begin{itemize}[noitemsep]
     \item \textbf{Noise centering:} Verify $\sum \epsilon_i = 0$ within each molecule.
@@ -683,6 +683,16 @@ The test suite (\texttt{tests/}) contains \textbf{108+ tests} covering:
     \item \textbf{Attention gates:} Forward pass with/without gates produces different outputs.
     \item \textbf{Quadratic DDIM grid:} Correct density at low noise, boundary at $t=0$.
     \item \textbf{Force-field relaxation:} Valid molecules survive; None inputs return None.
+    \item \textbf{Lab-readiness stages 1--6:} bond-order/stereo read-back,
+          geometry strain, SA proxy + PAINS, applicability domain, ADMET
+          alerts, retrosynthesis routes --- each with regressions pinning a
+          bug caught during implementation (defined-vs-potential
+          stereocentres, a route cap that discarded discovered routes,
+          mislabelled reaction templates).
+    \item \textbf{Lab-readiness gate:} sentinel $-1.0$ reports SKIP rather
+          than a fabricated pass, any FAIL beats SKIP in the overall
+          verdict, and gate metric keys are disjoint from
+          \texttt{evaluate()}'s so merging cannot clobber a MOSES number.
 \end{itemize}
 
 Run: \texttt{python -m pytest tests/ -q}
@@ -704,6 +714,113 @@ The project includes \texttt{visualize.py} which generates:
 \end{enumerate}
 
 Additionally, \texttt{scripts/build\_dashboard.py} generates a comprehensive HTML dashboard from all evaluation runs, with metric cards, sortable comparison tables, and 2D molecular galleries.
+
+% ═══════════════════════════════════════════════════════════════
+\section{Lab-Readiness Assessment: Six Stages and a Gate}
+\label{sec:labready}
+% ═══════════════════════════════════════════════════════════════
+
+The honest-ruler metrics answer ``is this a connected, sanitizable
+molecule?''. A synthesis lab asks a stricter question: \emph{can a chemist
+order this and make it?} The lab-readiness stack answers that in six
+independently usable stages (\texttt{src/utils/chem\_qa.py},
+\texttt{src/utils/retrosynthesis.py}), each labelled for what it is rather
+than for what a literature name would imply:
+
+\begin{center}
+\begin{tabular}{p{2.6cm}p{5.4cm}p{6.2cm}}
+\toprule
+Stage & Measures & What it is (and is not) \\
+\midrule
+1 Perception & bond orders and stereochemistry read back from the 3D
+coordinates & perception, not repair: it never adds or removes bonds, so
+ConnectedValidity is untouched \\
+2 Geometry & bond-length strain against covalent radii (Cordero 2008) and
+MMFF94/UFF strain energy & deviation from covalent norms, not a free
+energy \\
+3 Synthesis & 1--10 complexity proxy + PAINS catalogue matches & the
+complexity score is explicitly \emph{not} the published Ertl SA score (no
+fitted fragment table is shipped); PAINS is RDKit's real Baell--Holloway
+catalogue \\
+4 Domain & nearest-training-neighbour Tanimoto (Morgan r2/2048) & the same
+fingerprint family as SNN, so similarities are comparable across metrics \\
+5 ADMET & ESOL solubility + hERG/CYP/P-gp structural alerts & exact
+published Delaney coefficients; the alerts are auditable SMARTS patterns,
+not trained predictors --- no IC$_{50}$, no probability \\
+6 Routes & bounded template retrosynthesis from common building blocks &
+net transformations within a 2-step horizon, not a production
+retrosynthesis engine \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Stage~7 (\texttt{src/utils/lab\_gate.py}) runs all six over one cohort and
+renders a single PASS/FAIL/INCOMPLETE verdict from data-driven criteria
+(metric, operator, threshold and a one-line rationale for each, all
+replaceable by the caller):
+
+\begin{center}
+\begin{tabular}{llrl}
+\toprule
+Criterion & Metric & Threshold & Needs \\
+\midrule
+perception & Perception\% & $\geq 95$ & 3D coordinates \\
+geometry   & MeanBondStrainPct & $\leq 15$ & 3D coordinates \\
+pains      & PAINSFree\% & $\geq 95$ & --- \\
+in domain  & InDomain\% & $\geq 80$ & training set \\
+soluble    & ESOL\_Soluble\% & $\geq 60$ & --- \\
+routes     & RouteFeasibleRatio\% & $\geq 50$ & training-set baseline \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two semantics keep the verdict honest. First, a metric that cannot be
+measured reports the sentinel $-1.0$ (the same precedent as \texttt{BBB\%}
+on QM9 rows) and its criterion is reported as \textbf{SKIP} --- missing
+evidence never counts as a pass, and any SKIP without a FAIL makes the
+overall verdict INCOMPLETE rather than PASS. Second, the routes criterion
+is \emph{relative} to the training set routed under the identical bounded
+search, because the absolute rate was measured rather than assumed: the
+2-step template horizon routes only \textbf{0.74\%} of the 1628 real BBBP
+training compounds (purchasable drugs are not 2-step builds), while
+QM9-size molecules route near-100\% --- no absolute threshold serves both
+datasets, and a threshold real chemistry itself fails would be meaningless.
+
+The gate was validated end-to-end on the three committed BBB evals --- once
+standalone over each eval directory (\texttt{scripts/lab\_readiness\_gate.py},
+exit codes 0/1/2 for PASS/FAIL/INCOMPLETE) and once through generation
+itself (\texttt{generate\_and\_eval.py {-}{-}lab\_gate}, which merges the gate
+metrics into both the raw and relaxed metric tables and persists the
+verdicts as \texttt{lab\_gate}/\texttt{lab\_gate\_relaxed} in
+\texttt{metrics.json}):
+
+\begin{center}
+\begin{tabular}{lrrrrrrrl}
+\toprule
+arm & $n$ & percept.\% & strain\% & PAINS\% & in-dom.\% & soluble\% & routes\% & verdict \\
+\midrule
+full 200k (best)   & 554 & 0.72 & 12.19 & 100.0 & 0.00 & 78.5 & 0.00 & FAIL \\
+geofix (best)      & 418 & 0.96 & 14.98 & 100.0 & 0.00 & 82.8 & 0.00 & FAIL \\
+$\lambda_2$-renorm  & 478 & 1.05 & 19.59 & 100.0 & 0.00 & 80.1 & 0.00 & FAIL \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every current arm is refused, which is the correct verdict and consistent
+with L1: perception succeeds on well under 1\% of the outputs (the
+over-bonded, multi-fragment soup cannot be assigned bond orders at all ---
+\texttt{DetermineBondOrders} fails with a charge mismatch), and the
+generated molecules' nearest training neighbour sits at Tanimoto ${\sim}0.13$
+against the in-domain floor of 0.4. The gate also \emph{differentiates}
+where the arms genuinely differ: geometry passes at 12.19\% and 14.98\%
+strain for the full and geofix arms but fails at 19.59\% for the
+renormalized arm (mean MMFF energy 1774 vs ${\sim}987$ kcal/mol), and PAINS
+plus ESOL pass everywhere --- the stack does not fail everything
+discriminatingly-never; it fails the axes that are actually broken. Notably,
+the relaxed table flips the geometry criterion to PASS (strain 2.35\%) with
+every other criterion unchanged, which the gate reports without letting
+relaxation mask the raw verdict --- matching L3's conclusion that
+post-hoc relaxation cannot rescue connectivity.
 
 % ═══════════════════════════════════════════════════════════════
 \section{Limitations}
@@ -1110,6 +1227,17 @@ which defaults to off precisely so that pre-existing arms are untouched.
     \item \textbf{Oracle-conditioned targeting:} once the generator produces
           connected molecules, re-run the guidance sweep against a meaningful
           ConnV baseline instead of a flat 0.0.
+    \item \textbf{Lab-readiness gate: infrastructure DONE, every current arm
+          FAILS.} The six-stage stack and both entry points (standalone over
+          an eval dir; \texttt{{-}{-}lab\_gate} during generation) are built,
+          tested and validated on the three committed BBB evals (section on
+          lab-readiness). The verdict FAIL on every arm is the honest
+          measurement of today's outputs --- perception, domain and routes
+          fail exactly where L1 says the soup is --- so the gate's next run
+          is conditional on the sampler work: re-run
+          \texttt{scripts/lab\_readiness\_gate.py} once connected
+          molecules exist, and tighten the thresholds per assay rather than
+globally.
     \item \textbf{Scale:} move off CPU-only training and add a bond-order head
           with valence-aware sampling, targeting QM9 $>$80\% validity.
     \item \textbf{Paper submission:} full write-up with Tables I--IV mirroring

@@ -118,6 +118,12 @@ def main() -> None:
     parser.add_argument("--target_bbb", type=int, default=1, choices=[0, 1],
                         help="Target BBB class for guided generation: "
                              "0=BBB-, 1=BBB+")
+    parser.add_argument("--lab_gate", action="store_true",
+                        help="Run the six-stage lab-readiness gate (perception, "
+                             "geometry, synthesis, applicability domain, ADMET, "
+                             "retrosynthesis) on the RAW samples: merges gate "
+                             "metrics into the metric table / metrics.json and "
+                             "stores the PASS-FAIL verdict as lab_gate")
     args = parser.parse_args()
 
     # Config
@@ -324,6 +330,24 @@ def main() -> None:
     print("\n--- RAW (as generated) ---")
     print_metrics(metrics)
 
+    # Lab-readiness gate (stage 7): computed on the RAW samples — the gate
+    # answers "would we order this batch", and a lab orders the molecules as
+    # generated, not an idealized post-hoc relaxation. Gate metric keys are
+    # disjoint from evaluate()'s, so the update below cannot clobber a MOSES
+    # number; the keys land in the LaTeX row and metrics.json like any other.
+    # When --relax is also given the gate runs on the relaxed table too, so
+    # both LaTeX rows keep identical key sets (the relaxed row iterates
+    # metric_keys) and the two gate tables can be compared directly.
+    gate = None
+    gate_relaxed = None
+    if args.lab_gate:
+        from src.utils.lab_gate import print_gate, run_gate
+
+        gate_ref = _gate_reference_mols(full_dataset, train_smiles)
+        gate = run_gate(all_mols, gate_ref)
+        metrics.update(gate["metrics"])
+        print_gate(gate)
+
     # Print as table for easy copy-paste. Includes the Phase 4 BBB metrics
     # (BBB%, ScaffDiv, ScaffCov, Lipinski%, Veber%, CNS_MPO) so Table I rows
     # can be pasted straight from the eval log.
@@ -342,6 +366,11 @@ def main() -> None:
                                    bbb_classifier=bbb_classifier)
         print("\n--- RELAXED (MMFF94/UFF post-hoc; report alongside raw) ---")
         print_metrics(metrics_relaxed)
+        if gate is not None:
+            print("\n--- lab-readiness gate on RELAXED samples ---")
+            gate_relaxed = run_gate(relaxed, gate_ref)
+            metrics_relaxed.update(gate_relaxed["metrics"])
+            print_gate(gate_relaxed)
         print("\nLaTeX row (relaxed):")
         print("  & ".join(f"{metrics_relaxed[k]:.4f}" for k in metric_keys) + " \\\\")
     else:
@@ -354,7 +383,33 @@ def main() -> None:
             ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
             step_schedule=args.step_schedule, relax=args.relax,
             relaxed_mols=relaxed, relaxed_metrics=metrics_relaxed,
+            gate=gate, gate_relaxed=gate_relaxed,
         )
+
+
+def _gate_reference_mols(full_dataset, train_smiles: set[str]):
+    """Correct-bond-order reference molecules for the gate's stage 4.
+
+    Prefers the dataset's original ``data.smiles`` (BBBP/B3DB carry it):
+    re-parsing SMILES restores proper bond orders, so the Morgan
+    fingerprints driving the applicability-domain check compare real
+    chemistry. The fallback path (QM9, no SMILES column) re-parses the
+    canonical SMILES already collected during eval — also correct bond
+    orders, unlike the distance-built single-bond graphs themselves.
+    """
+    refs: list[Chem.Mol] = []
+    for data in full_dataset:
+        smi = getattr(data, "smiles", None)
+        if smi:
+            m = Chem.MolFromSmiles(str(smi))
+            if m is not None:
+                refs.append(m)
+    if not refs:
+        for smi in sorted(train_smiles):
+            m = Chem.MolFromSmiles(smi)
+            if m is not None:
+                refs.append(m)
+    return refs
 
 
 def build_target_cond(
@@ -400,6 +455,8 @@ def _save_eval_outputs(
     latex_row: str,
     relaxed_mols: list | None = None,
     relaxed_metrics: dict | None = None,
+    gate: dict | None = None,
+    gate_relaxed: dict | None = None,
     **run_cfg,
 ) -> None:
     """Persist eval results: metrics.json, smiles.txt, molecules.sdf (3D)."""
@@ -426,6 +483,11 @@ def _save_eval_outputs(
     }
     if relaxed_metrics is not None:
         payload["metrics_relaxed"] = relaxed_metrics
+    if gate is not None:
+        # Full stage report + per-criterion verdicts + overall verdict.
+        payload["lab_gate"] = gate
+    if gate_relaxed is not None:
+        payload["lab_gate_relaxed"] = gate_relaxed
     with open(out / "metrics.json", "w") as f:
         json.dump(payload, f, indent=2)
     with open(out / "smiles.txt", "w") as f:

@@ -71,17 +71,36 @@ TOLERANCE_MATRIX: dict[tuple[int, int], float] = {
     (8, 8): 0.40,
     (8, 9): 0.40,
     (9, 9): 0.40,
+    # BBBP-era elements (S, Cl, Br): pairs the QM9 calibration never saw,
+    # so they previously fell back to the 0.45 scalar. Values are tighter
+    # than the scalar (heavier atoms have longer radii sums, so a generous
+    # scalar over-bonds their contacts) while leaving every QM9-era pair —
+    # and therefore every QM9 eval — bit-for-bit unchanged.
+    (6, 16): 0.40,  # C–S
+    (6, 17): 0.38,  # C–Cl
+    (6, 35): 0.40,  # C–Br
+    (7, 16): 0.38,  # N–S
+    (16, 16): 0.35,  # S–S
 }
 
 
-def get_bond_tolerance(z_i: int, z_j: int) -> float:
+def get_bond_tolerance(z_i: int, z_j: int,
+                       cap: float | None = None) -> float:
     """Tolerance for element pair ``(z_i, z_j)`` (Strategy 0.4).
 
     Symmetric in argument order; unlisted pairs (heavier elements) fall back
     to the scalar ``_BOND_TOLERANCE``.
+
+    ``cap`` (plan workstream A2) tighten-caps the result: ``min(base, cap)``.
+    Tighten-only by construction — a cap can never *loosen* a calibrated
+    pair (H–H stays 0.25 under cap 0.35), and ``cap=None`` reproduces the
+    legacy behaviour exactly, so Table I rows remain regenerable.
     """
     key = (min(int(z_i), int(z_j)), max(int(z_i), int(z_j)))
-    return TOLERANCE_MATRIX.get(key, _BOND_TOLERANCE)
+    base = TOLERANCE_MATRIX.get(key, _BOND_TOLERANCE)
+    if cap is not None and cap < base:
+        return float(cap)
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +114,9 @@ def coords_and_types_to_mol(
     distance_cutoff: float = 2.5,
     sanitize: bool = True,
     min_fragment_atoms: int = 1,
+    bond_tolerance: float | None = None,
+    max_bonds_ratio: float = 0.0,
+    perceive_orders: bool = False,
 ) -> Chem.Mol | None:
     """Build an RDKit Mol from 3D coordinates and atom types.
 
@@ -112,9 +134,31 @@ def coords_and_types_to_mol(
             Unsupported together with dense (N, N, 5) ``bond_logits`` — that
             combination falls back to distance-based bonding on the kept
             atoms.
+        bond_tolerance: plan workstream A2 — tighten-cap (Å) applied to the
+            effective per-pair tolerance via ``min(base, cap)``. ``None``
+            (default) is the legacy Table I protocol; 0.35 is the BBBP-era
+            setting the plan asks for. Tighten-only: calibrated pairs can
+            only stay or tighten, never loosen.
+        max_bonds_ratio: plan workstream A3 — reject the molecule when
+            ``n_bonds > ratio * 0.95 * n_atoms`` (0 = off, legacy). 1.4 is
+            the plan's setting: real chemistry sits near ratio 1.0
+            (~19 bonds / 20 heavy atoms), so a molecule far above that is
+            over-bonded soup and must count as INVALID rather than inflate
+            BondsPerMol. Rejection is honest rejection: it lowers validity
+            for the survivors' sake and never re-labels a rejected molecule.
+        perceive_orders: plan workstream A4 — after the single-bond
+            topology sanitizes, attempt ``rdDetermineBonds.
+            DetermineBondOrders`` (bond ORDERS only; connectivity is the
+            covalent-radii graph above and is never re-perceived). On any
+            failure the single-bond molecule is returned unchanged, so
+            Validity/ConnectedValidity are invariant by construction while
+            SMILES-derived metrics (QED, LogP, SNN, scaffolds) get real
+            bond orders instead of an all-single skeleton. Only applied
+            when ``sanitize=True``.
 
     Returns:
-        An RDKit ``Mol`` or ``None`` if construction/sanitization fails.
+        An RDKit ``Mol`` or ``None`` if construction/sanitization fails
+        (or the ``max_bonds_ratio`` gate rejects the molecule).
     """
     valid_atoms: list[int] = [  # indices into pos/atomic_numbers
         i for i, z in enumerate(atomic_numbers)
@@ -128,6 +172,7 @@ def coords_and_types_to_mol(
     if min_fragment_atoms > 1:
         kept = _keep_large_fragments(
             pos, atomic_numbers, valid_atoms, min_fragment_atoms, distance_cutoff,
+            bond_tolerance=bond_tolerance,
         )
         if len(kept) != len(valid_atoms) and bond_logits is not None \
                 and getattr(bond_logits, "ndim", 0) == 3:
@@ -151,7 +196,7 @@ def coords_and_types_to_mol(
                                bond_logits, distance_cutoff)
     else:
         _add_bonds_from_distance(mol, pos, atomic_numbers, valid_atoms,
-                                 distance_cutoff)
+                                 distance_cutoff, bond_tolerance=bond_tolerance)
 
     # Try to sanitise
     if sanitize:
@@ -167,6 +212,27 @@ def coords_and_types_to_mol(
         conf.SetAtomPosition(out_idx, Point3D(float(x), float(y), float(z_pos)))
     conf.Set3D(True)
     mol.AddConformer(conf, assignId=True)
+
+    # A4: bond-order upgrade on a COPY so a mid-solve failure can never
+    # corrupt the already-valid single-bond molecule. Runs after the
+    # conformer is embedded — DetermineBondOrders uses the 3D geometry
+    # (the stage-1 perception code documents the same requirement).
+    if sanitize and perceive_orders:
+        from rdkit.Chem import rdDetermineBonds
+
+        attempt = Chem.RWMol(mol)
+        try:
+            rdDetermineBonds.DetermineBondOrders(attempt, charge=0)
+            Chem.SanitizeMol(attempt)
+            mol = attempt
+        except Exception:
+            pass  # keep the honest single-bond topology
+
+    # A3: over-bonded rejection gate (see docstring; 0 = off).
+    if max_bonds_ratio > 0.0:
+        n_atoms = mol.GetNumAtoms()
+        if mol.GetNumBonds() > max_bonds_ratio * 0.95 * n_atoms:
+            return None
     return mol
 
 
@@ -204,12 +270,14 @@ def _add_bonds_from_distance(
     atomic_numbers: np.ndarray,
     valid_atoms: list[int],
     distance_cutoff: float,
+    bond_tolerance: float | None = None,
 ) -> None:
     """Element-aware bond assignment via covalent radii + tolerance matrix.
 
-    A pair is bonded iff ``dist <= r_i + r_j + get_bond_tolerance(i, j)``
+    A pair is bonded iff ``dist <= r_i + r_j + get_bond_tolerance(i, j, cap)``
     (and within the hard ``distance_cutoff`` cap) — Strategy 0.4's
-    per-element-pair matrix replaces the old global +0.45 Å scalar. This
+    per-element-pair matrix replaces the old global +0.45 Å scalar, with the
+    optional ``bond_tolerance`` tighten-cap (plan A2) applied on top. This
     excludes the contacts a plain distance cutoff bonds spuriously — methyl
     H···H ≈ 1.78 Å, benzene 1-3 C···C ≈ 2.42 Å — which made even REAL QM9
     molecules fail sanitization (ground-truth control: 0.7% valid at cutoff
@@ -233,7 +301,8 @@ def _add_bonds_from_distance(
             if ri is None or rj is None:
                 continue
             if dist <= ri + rj + get_bond_tolerance(
-                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig])):
+                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig]),
+                    cap=bond_tolerance):
                 mol.AddBond(i_loc, j_loc, Chem.BondType.SINGLE)
 
 
@@ -243,6 +312,7 @@ def _keep_large_fragments(
     valid_atoms: list[int],
     min_fragment_atoms: int,
     distance_cutoff: float,
+    bond_tolerance: float | None = None,
 ) -> list[int]:
     """Indices of provisional fragments with ``>= min_fragment_atoms`` atoms.
 
@@ -273,7 +343,8 @@ def _keep_large_fragments(
             if ri is None or rj is None:
                 continue
             if dist <= ri + rj + get_bond_tolerance(
-                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig])):
+                    int(atomic_numbers[i_orig]), int(atomic_numbers[j_orig]),
+                    cap=bond_tolerance):
                 ra, rb = find(a), find(b)
                 if ra != rb:
                     parent[ra] = rb

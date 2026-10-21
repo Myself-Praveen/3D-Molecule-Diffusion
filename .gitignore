@@ -24,3 +24,7 @@ doc/build/
 
 # deploy helper (isolated env + wrapper); the env dir is large and machine-local
 deploy/deploy-env/
+
+# render / figure build artifacts (regenerate from source, not shipped)
+doc/build/
+outputs/figures/build/

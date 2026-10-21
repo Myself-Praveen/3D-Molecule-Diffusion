@@ -1,0 +1,13 @@
+# Pinned requirements derived from deploy/deploy-env (pip freeze).
+# Regenerate after a rebuild if the deployment target changes:
+#   deploy/deploy-env/bin/pip freeze --exclude-editable > deploy/requirements-freeze.txt
+#
+# These are the runtime deps for the conda-free deployment wrapper.
+torch==2.14.1
+torchaudio==2.11.0
+torchvision==0.29.1
+numpy==2.5.4
+scipy==1.18.1
+matplotlib==3.11.2
+pandas==3.0.6
+requests==2.34.2

@@ -250,12 +250,18 @@ class TestCliWiring:
     def test_generate_and_eval_has_new_flags(self):
         import generate_and_eval as g
         src = inspect.getsource(g)
-        for flag in ("--type_temperature", "--min_fragment_atoms", "--min_qed"):
+        for flag in ("--type_temperature", "--min_fragment_atoms", "--min_qed",
+                     "--bond_tolerance", "--max_bonds_ratio", "--perceive_bonds"):
             assert flag in src, f"missing CLI flag {flag}"
         # The flags must actually reach the metric code paths.
         assert "type_temperature=args.type_temperature" in src
         assert "min_fragment_atoms=args.min_fragment_atoms" in src
         assert "apply_qed_filter" in src
+        # Bond-perception chain (plan A1–A4): reach-through + provenance.
+        assert "bond_tolerance=args.bond_tolerance" in src
+        assert "max_bonds_ratio=args.max_bonds_ratio" in src
+        assert "perceive_orders=args.perceive_bonds" in src
+        assert "perceive_bonds=args.perceive_bonds" in src  # run_cfg record
 
     def test_tolerance_matrix_doc_entry(self):
         """The appendix must record what was (and wasn't) implemented."""

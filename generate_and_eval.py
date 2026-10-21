@@ -108,6 +108,20 @@ def main() -> None:
                         help="Connectivity post-processing: drop provisional "
                              "distance-graph fragments smaller than this before "
                              "bond assignment (1 = off, 2 = drop isolated atoms)")
+    parser.add_argument("--bond_tolerance", type=float, default=None,
+                        help="Bond-perception chain A2: tighten-cap (Å) on the "
+                             "per-pair covalent-radius tolerance, min(base, cap) "
+                             "(default: legacy Table I protocol; 0.35 = BBBP-era "
+                             "setting; tighten-only, never loosens)")
+    parser.add_argument("--max_bonds_ratio", type=float, default=0.0,
+                        help="Bond chain A3: reject molecules whose bond count "
+                             "exceeds ratio * 0.95 * n_atoms — over-bonded soup "
+                             "counts as invalid (0 = off, legacy; plan: 1.4)")
+    parser.add_argument("--perceive_bonds", action="store_true",
+                        help="Bond chain A4: after building the single-bond "
+                             "topology, attempt rdDetermineBonds bond-order "
+                             "perception (fallback keeps single bonds; "
+                             "Validity/ConnV invariant by construction)")
     parser.add_argument("--min_qed", type=float, default=0.0,
                         help="Rejection filter: replace molecules with QED below "
                              "this by invalid (0 = off; try 0.5 for drug-likeness)")
@@ -282,6 +296,9 @@ def main() -> None:
             mol = coords_and_types_to_mol(
                 mol_pos, atomic_numbers,
                 min_fragment_atoms=args.min_fragment_atoms,
+                bond_tolerance=args.bond_tolerance,
+                max_bonds_ratio=args.max_bonds_ratio,
+                perceive_orders=args.perceive_bonds,
             )
             all_mols.append(mol)
             offset += count
@@ -382,6 +399,12 @@ def main() -> None:
             checkpoint=args.checkpoint, num_samples=args.num_samples,
             ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
             step_schedule=args.step_schedule, relax=args.relax,
+            # Bond-perception chain protocol (plan workstreams A1–A4) —
+            # recorded so any row can be regenerated with the exact lens.
+            min_fragment_atoms=args.min_fragment_atoms,
+            bond_tolerance=args.bond_tolerance,
+            max_bonds_ratio=args.max_bonds_ratio,
+            perceive_bonds=args.perceive_bonds,
             relaxed_mols=relaxed, relaxed_metrics=metrics_relaxed,
             gate=gate, gate_relaxed=gate_relaxed,
         )

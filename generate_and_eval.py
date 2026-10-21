@@ -87,7 +87,10 @@ def main() -> None:
                         help="Config YAML used during training")
     parser.add_argument("--batch_size", type=int, default=100,
                         help="Generate in batches of this size")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Seed for BOTH the atom-count histogram rng and "
+                             "torch's sampling noise (same seed => identical "
+                             "molecules; enables the plan's seed medians)")
     parser.add_argument("--device", type=str, default=None,
                         help="Force device (cuda / cpu)")
     parser.add_argument("--output_dir", type=str, default=None,
@@ -145,6 +148,14 @@ def main() -> None:
                              "metrics into the metric table / metrics.json and "
                              "stores the PASS-FAIL verdict as lab_gate")
     args = parser.parse_args()
+
+    # Seed torch's GLOBAL generator — the sampler's randn noise draws come
+    # from it, while --seed previously only reached the numpy atom-count rng.
+    # Without this, every run generated different molecules regardless of
+    # --seed, which fabricated the false "reproducibility band" recorded in
+    # progress.md §15 item 11 and made the plan's seed-median requirement
+    # unrunnable. Same seed + same flags => byte-identical sampling.
+    torch.manual_seed(args.seed)
 
     # Config
     with open(args.config) as f:

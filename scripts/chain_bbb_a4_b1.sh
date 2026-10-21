@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Plan Phase 1/2 chain 1 (decision-tree order):
+#   [A1]  seeded re-run of the calibrated-lens baseline (the first attempt
+#         was generated with an unseeded torch RNG — generate_and_eval.py
+#         only seeded the numpy atom-count rng until the fix — so it is
+#         re-run here and the old numbers are superseded)
 #   [A4]  re-eval with --perceive_bonds (orders only; Validity/ConnV/bonds
 #         are invariant by construction — this measures the SMILES-derived
 #         metrics on real bond orders instead of an all-single skeleton)
 #   [B1]  fine guidance sweep w = 1.5, 2.5, 3.0 (the plan's tree values)
 #   [B2]  last.pt (ep 7700, BBB% 24.0 at w=0) + mild guidance w=0.5
 # All runs use the calibrated lens: cap 0.25 + min_fragment_atoms 2 +
-# max_bonds_ratio 1.4 (ground-truth calibrated, commit 5c6a46b).
+# max_bonds_ratio 1.4 (ground-truth calibrated, commit 5c6a46b) and, since
+# the seeding fix, seed 42 covers torch sampling too — same seed + same
+# flags reproduce the identical metrics (verified byte-for-byte).
 #   setsid nohup bash scripts/chain_bbb_a4_b1.sh > logs/chain_bbb_a4_b1.log 2>&1 &
 set -u
 cd "$(dirname "$0")/.."
@@ -32,6 +38,7 @@ run() {  # run <logname> <outdir> <extra args...>
 }
 
 CKPT=$CKPT_BEST
+run a1_baseline outputs/eval_bbb_full_connfix_a1
 run a4_perceive outputs/eval_bbb_connfix_a4 --perceive_bonds
 run guidance_w1p5 outputs/eval_bbb_guidance_w1p5 --guidance_scale 1.5 --target_bbb 1
 run guidance_w2p5 outputs/eval_bbb_guidance_w2p5 --guidance_scale 2.5 --target_bbb 1

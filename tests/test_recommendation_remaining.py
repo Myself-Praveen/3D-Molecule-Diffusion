@@ -294,6 +294,10 @@ class TestCliWiring:
         assert "apply_veber_filter" in src
         assert "veber_pass_rate(all_mols)" in src
         assert 'metrics["Veber_filtered%"]' in src
+        # Seeding: --seed must reach torch's sampling noise, not just the
+        # numpy atom-count rng (the unseeded-generator bug behind the
+        # false "reproducibility band" in progress.md §15 item 11).
+        assert "torch.manual_seed(args.seed)" in src
         # Bond-perception chain (plan A1–A4): reach-through + provenance.
         assert "bond_tolerance=args.bond_tolerance" in src
         assert "max_bonds_ratio=args.max_bonds_ratio" in src

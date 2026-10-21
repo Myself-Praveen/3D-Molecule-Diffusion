@@ -28,3 +28,8 @@ deploy/deploy-env/
 # render / figure build artifacts (regenerate from source, not shipped)
 doc/build/
 outputs/figures/build/
+
+# venvs created under the repo for experiments/deploy are machine-local and
+# large; never commit them.
+**.venv/
+*/.venv/

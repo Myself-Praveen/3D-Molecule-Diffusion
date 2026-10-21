@@ -452,3 +452,25 @@ The generated geometry tightens at the same time — `x0hat_NN_p50` at t=100 fal
    **All 3 seeds now run** under the fixed partitioner (`scripts/rerun_k7_iid.sh`, backgrounded, pid recorded): seed 42 V 20.9 / ConnV 0.0 / Bonds 6.24 / BBB% 0.0; seed 123 V 29.4 / ConnV 0.0 / Bonds 7.92 / BBB% 0.0; seed 456 trains to round 50 but that seed's results write needs a second look (the pre-fix rerun script had a quoting bug at the results-write line and only seed 42 + 123 wrote cleanly before the current fix).
 
    **Verdict (root cause recorded):** K=7 fails with the unfixed partitioner and succeeds with the fixed one, so the failure was a partitioner consequence, not an OOM or index bug. Once fixed, K=7 reproduces the **same negative as K=1/2/4**: ConnV 0.0 and BBB% 0.0 for every seed (over-bonded atom soup, 6–8 bonds/mol vs ~19 real), so K=7 adds no connectivity/BBB signal and is a third excluded K hypothesis with K=1 as the centralized-equivalent control row.
+
+   **seed 456 closed (re-run below):** the arm trains and evaluates cleanly; only the `results.json` *write* was broken in the pre-fix script. Re-running it through `scripts/rerun_k7_iid.sh` after the quoting fix rewrites the record from artifacts (train.log, history.json, eval/metrics.json), so all three seeds now report matched Validity+ConnV+Bonds+BBB% and the K=7 row is real data rather than a `train_exit=1` placeholder.
+13. **Task 1 (FedDiff3D close-out) — geofix verdict: FAIL, third excluded hypothesis.** `scripts/chain_bbb_geofix_final.sh` ran end-to-end on the completed 1400-epoch checkpoint (eval exit 0, ConnV-LDAG exit 0, figures exit 0) and printed the acceptance verdict itself, so a negative could not be mistaken for a pass:
+
+   | arm | Validity | **ConnV** | BondsPerMol | BBB% | ConnV-LDAG coverage |
+   |---|---|---|---|---|---|
+   | `bbb_full` 200k best (ep 6159) | 55.4 | **1.0** | 32.8 | 17.3 | 0.000 (does NOT beat trivial) |
+   | `bbb_geofix` best (ep 917) | 41.8 | **1.5** | 29.9 | 10.8 | 0.000 (does NOT beat trivial) |
+
+   ConnV 1.5 is nominally the best number this project has produced and is still meaningless in absolute terms (1.5% against 54.4% for QM9 V4-eps); bonds/mol 29.9 remains over-bonded against ~19 real; BBB% 10.8 sits *below* the 24.8% unconditioned baseline; and the LDAG diagnostic still prefers the all-at-origin generator (coverage 0.000 vs 1.000, uniqueness 2.132 Å). The acceptance rule the chain printed (`ConnV>1.2 AND Bonds~19 AND BBB%>24.8`) fails on the bond axis outright. Re-running the identical checkpoint+protocol moved ConnV 1.2→1.5 and BBB% 12.2→10.8 — the L4 reproducibility band, no verdict change on any axis.
+
+   **Consequence: the objective family is closed.** Step budget (§13.17, item 3), the λ₂ demand-side dilution (item 4) and now explicit shape supervision (Kabsch-aligned MSE + pairwise-distance loss, item 10) have each been excluded by direct A/B rather than argument. What remains is the sampler and geometry-based checkpoint selection (L6). Recorded as FAIL in `docs/project_report.tex` L8 + Future Work 3/4; artifacts `outputs/eval_bbb_geofix_final/metrics.json`, `logs/bbb_geofix_connv.log`, `logs/run_chain_bbb_geofix_final.log`.
+14. **Task 2 (K=7 seed 456) — closed, and it confirms the L4 noise verdict.** `scripts/rerun_k7_iid.sh` with `SEEDS=456` retrains the arm (train exit=0, 50 rounds) and re-evals it under the Table I protocol (eval exit=0), and the previously broken `results.json` now writes cleanly from artifacts: **status=ok, V 1.3, ConnV 0.0, Bonds 3.69, BBB% 0.0** (13 valid of 1000). All three K=7 seeds are now real records rather than placeholders:
+
+   | K=7 seed | Validity | ConnV | BondsPerMol | BBB% |
+   |---|---|---|---|---|
+   | 42  | 20.9 | 0.0 | 6.24 | 0.0 |
+   | 123 | 29.4 | 0.0 | 7.92 | 0.0 |
+   | 456 | 1.3  | 0.0 | 3.69 | 0.0 |
+   | **median** | **20.9** | **0.0** | **6.24** | **0.0** |
+
+   **Median validity 20.9 with a 1.3–29.4 range (28.1 pts) is exactly why per-K means are not reportable** (§13.16, L4): same config, same fixed partitioner, same 50-round budget — only the seed moves — and validity swings by an order of magnitude. So the K-sweep reports **medians with the seed spread and no monotonicity claim**, as the brief requires. The robust result is unchanged and is the only one worth stating: **ConnV = 0.0 and BBB% = 0.0 for every seed at every K**, i.e. the over-bonded/fragmented-soup failure is independent of K, and K=7 stays a third excluded K hypothesis with K=1 as the centralized-equivalent control row.

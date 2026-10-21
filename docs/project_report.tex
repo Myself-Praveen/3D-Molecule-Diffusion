@@ -958,6 +958,54 @@ atoms and is not a meaningful headline number on its own --- which is exactly
 why ConnectedValidity is reported beside it --- and \texttt{BBB\%} takes the
 sentinel value $-1.0$ on QM9 rows, where the BBB oracle does not apply.
 
+\subsection{L8: The Geometry-Aware Objective Did Not Fix the Soup}
+
+The last surviving \emph{objective} hypothesis was that the coordinate MSE is
+satisfied by loose geometry: it is invariant to the molecule's orientation (the
+model is charged for the orientation of a particular noise realisation, whose
+cheapest answer is a rotationally averaged, looser shape) and it never states
+the interatomic distances that the connectivity ruler actually scores. The
+\texttt{geofix} arm adds exactly those two terms to the denoised $x_0$, both
+gated to low noise under the same contract as the valence penalty: a
+Kabsch-aligned coordinate MSE (a loss on shape alone) and an explicit
+pairwise-distance MSE (the bond windows, stated in the objective). Both sit
+behind \texttt{training.geofix} (default \texttt{false}, plus a resume-time
+guard), so every pre-existing arm is bit-for-bit unchanged; the arm ran at
+probe scale (1400 epochs, its own checkpoint directory) and was evaluated with
+the identical 1000-molecule protocol as every Table~I row. An inverted Kabsch
+rotation in the first implementation was caught by the arm's 16 unit tests
+before any budget was spent.
+
+\textbf{Outcome: negative --- third excluded objective hypothesis.}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & full 200k (best) & geofix (best) \\
+\midrule
+Validity             & 55.4 & 41.8 \\
+ConnectedValidity    & 1.0  & \textbf{1.5} \\
+BondsPerMol          & 32.8 & 29.9 \\
+BBB\%                & 17.3 & 10.8 \\
+ConnV-LDAG coverage  & 0.000 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+ConnV 1.5 is nominally the highest this project has recorded, but it is 1.5\%
+against 54.4\% for the QM9 arm; bonds per molecule is still 29.9 against
+${\sim}19$ for real BBBP, and BBB\% (10.8) falls \emph{below} the 24.8\%
+unconditioned baseline. The LDAG diagnostic still prefers the all-at-origin
+generator (coverage 0.000 against 1.000; uniqueness 2.13~\AA{}). The
+acceptance criterion --- ConnV $\gg 1.2$ \emph{and} Bonds $\approx 19$ ---
+fails outright on the bond count and is nowhere near passing on connectivity.
+Re-running the same checkpoint and protocol moved ConnV 1.2 $\to$ 1.5 and BBB\%
+12.2 $\to$ 10.8, which is the L4 reproducibility band and does not change the
+verdict on any axis. With the step budget (L1), the $\lambda_2$ demand side
+(L5) and now explicit shape supervision all excluded by direct A/B, the
+\textbf{objective family is exhausted and the sampler (plus geometry-based
+checkpoint selection, L6) is what remains}.
+
 % ═══════════════════════════════════════════════════════════════
 \section{Decisions on the Implementation-Plan Open Questions}
 \label{sec:openq}
@@ -1033,15 +1081,19 @@ which defaults to off precisely so that pre-existing arms are untouched.
           unmodified arm's 1.0, BBB\% 16.1 against 17.3 --- so a second
           objective hypothesis is excluded by direct A/B rather than by
           argument.
-    \item \textbf{Objective/sampler link:} with step budget and $\lambda_2$
-          demand both excluded, the two surviving explanations of the soup are
-          the objective's insensitivity to connectivity and the sampler.
-    \item \textbf{Geometry-aware objective (geofix): launched.} Rotation/translation-
-          invariant coordinate MSE plus an explicit pairwise-distance loss are added
-          behind a gated flag (default off) as the single controlled arm
-          `configs/central_bbb_geofix.yaml`. Acceptance is ConnV $\gg 1.2$ and
-          Bonds $\approx 19$; on failure it is recorded as a third excluded
-          objective hypothesis.
+    \item \textbf{Objective/sampler link:} with step budget, $\lambda_2$
+          demand and explicit shape supervision (L8) all excluded by direct
+          A/B, the surviving explanation of the soup is the sampler --- the
+          objective family has been closed off empirically, not by argument.
+    \item \textbf{Geometry-aware objective (geofix): DONE, negative.} The arm
+          described in L8 (Kabsch-aligned MSE + pairwise-distance loss, probe
+          scale, matched protocol) reached ConnV 1.5 with 29.9 bonds per
+          molecule and BBB\% 10.8 --- the highest ConnV recorded here and still
+          meaningless in absolute terms, still over-bonded against ${\sim}19$
+          real, and below the unconditioned BBB baseline. Acceptance fails, so
+          this is the third excluded objective hypothesis and the objective
+          family is closed; what remains is the sampler and geometry-based
+          checkpoint selection.
     \item \textbf{Conditioning re-checked (mixed result):} the full-budget
           checkpoint's conditioning signal is demonstrably alive (coordinate response
           17\% of prediction norm; type-head 57\%), and guidance does lift BBB\%

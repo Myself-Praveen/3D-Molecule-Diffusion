@@ -634,3 +634,140 @@ def applicability_domain(
         "PctBeyond60": 100.0 * sum(1 for s in max_sims if s >= 0.60)
                        / len(max_sims),
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: ADMET proxies (solubility + liability structural alerts)
+# ---------------------------------------------------------------------------
+
+# ESOL: Delaney (J. Chem. Inf. Model. 2007) linear regression on four
+# descriptors. logS in log10(mol/L); the coefficients are the published
+# fitted ones, so ESOL values ARE comparable to the literature scale (unlike
+# the complexity score above, which documents its own provenance).
+_ESOL_INTERCEPT = 0.16
+_ESOL_LOGP = -0.63
+_ESOL_MW = -0.0062
+_ESOL_RB = 0.062
+_ESOL_AP = 0.066
+
+
+def esol_log_s(mol: Chem.Mol | None) -> float | None:
+    """Delaney ESOL aqueous solubility, log10(mol/L). Higher = more soluble.
+
+    Pure arithmetic on cLogP, molecular weight, rotatable bonds and aromatic
+    proportion — no model loading, deterministic, exact published
+    coefficients. Returns ``None`` when descriptors cannot be computed.
+
+    Solubility is the first ADMET property a lab measures because it gates
+    everything else (dose, formulation, whether the compound can be tested at
+    all), and it is the property 3D generators most often wreck while QED
+    stays green — QED does not include logS.
+    """
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    try:
+        logp = Descriptors.MolLogP(mol)
+        mw = Descriptors.MolWt(mol)
+        rb = rdMolDescriptors.CalcNumRotatableBonds(mol)
+        n_heavy = mol.GetNumHeavyAtoms()
+        if n_heavy == 0:
+            return None
+        n_arom = sum(1 for a in mol.GetAtoms() if a.GetIsAromatic())
+        ap = n_arom / n_heavy
+        return (_ESOL_INTERCEPT + _ESOL_LOGP * logp + _ESOL_MW * mw
+                + _ESOL_RB * rb + _ESOL_AP * ap)
+    except Exception:
+        return None
+
+
+# Structural alerts as explicit SMARTS so a reviewer can audit exactly what
+# fires. These are *heuristic first-pass flags from the medicinal-chemistry
+# literature*, not trained predictors — see admet_alerts()'s docstring, which
+# states that limitation, matching how this module labels the complexity
+# score rather than passing either off as a calibrated model.
+#
+# Each entry: (label, SMARTS, what it is known to flag).
+_ALERT_PATTERNS: list[tuple[str, str, str]] = [
+    # hERG channel liability: the classic cationic-amphiphile pharmacophore —
+    # a basic (protonatable) nitrogen within a lipophilic aromatic frame.
+    ("hERG_basic_amine",
+     "[NX3;H0,H1;!$(N-C=O);!$(N-S(=O)=O)]([CX4])[CX4]",
+     "tertiary/secondary aliphatic amine — hERG liability motif"),
+    # CYP3A4 inhibition:azole nitrogen ligands coordinate the heme iron;
+    # thiophene/terminal alkynes are classic soft-spot mechanisms. The
+    # pattern is any pyridine-type N (no H) in a 5-membered aromatic ring —
+    # catches imidazole/pyrazole/triazoles including their [nH] tautomers
+    # (a stricter two-N pattern missed `c1cnc[nH]1` outright), while pyrrole
+    # ([nH]-only) and pyridine (6-ring) correctly stay quiet.
+    ("CYP3A4_azole",
+     "[nX2;r5]",
+     "5-membered azole N (imidazole/pyrazole/triazole) — CYP heme ligand"),
+    ("CYP3A4_thiophene",
+     "[sX2;r5]1[cX3][cX3][cX3][cX3]1",
+     "thiophene — CYP-mediated soft spot"),
+    # P-gp efflux: cationic amphiphiles with two hydrophobic anchors are the
+    # canonical efflux-substrate shape.
+    ("Pgp_amphiphile",
+     "[NX3;H0;!$(N-C=O)]([CX4][CX4])[CX4][CX4]",
+     "tertiary amine with two alkyl arms — P-gp substrate motif"),
+    # Promiscuity/aggregation flag: extended flat polyaromatics are frequent
+    # hitters in HTS (PAINS-adjacent, complements pains_matches).
+    ("flat_polyaromatic",
+     "[a;r6]1[a;r6][a;r6][a;r6][a;r6][a;r6]1[a;r6]2[a;r6][a;r6][a;r6][a;r6][a;r6]2",
+     "two fused benzene rings — aggregation/HTS frequent hitter"),
+]
+
+
+def admet_alerts(mol: Chem.Mol | None) -> list[str]:
+    """Heuristic structural alerts that fire on ``mol`` (labels, auditable).
+
+    **What these are:** SMARTS patterns from widely used medicinal-chemistry
+    structural-alert practice (hERG cationic amphiphile, CYP3A4 heme-ligating
+    azoles, P-gp efflux shape, flat polyaromatic frequent hitters). Each label
+    maps to exactly one pattern in ``_ALERT_PATTERNS``, so every flag can be
+    traced to a substructure a chemist can look at.
+
+    **What they are not:** trained predictors. They do not output an IC50,
+    an EC50, or a probability, and they are not a substitute for in-vitro
+    hERG/CYP/P-gp assays. They are the cheap first-pass triage that decides
+    which candidates are worth ordering those assays for — which is exactly
+    the decision a lab-readiness gate has to make before spending a order.
+
+    Returns label strings; ``[]`` when nothing fires or input is ``None``.
+    """
+    if mol is None or mol.GetNumAtoms() == 0:
+        return []
+    fired: list[str] = []
+    for label, smarts, _note in _ALERT_PATTERNS:
+        try:
+            patt = Chem.MolFromSmarts(smarts)
+            if patt is not None and mol.HasSubstructMatch(patt):
+                fired.append(label)
+        except Exception:
+            continue
+    return fired
+
+
+def admet_summary(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
+    """Cohort ADMET view: solubility mean + per-alert fire rates.
+
+    Alert rates are over VALID molecules only (same denominator convention
+    as the MOSES suite), so a fragment soup cannot dilute its own alert rate
+    by being mostly-None.
+    """
+    valid = [m for m in mols if m is not None]
+    if not valid:
+        return {"ESOL_logS": 0.0, "ESOL_Soluble%": 0.0,
+                **{f"{label}%": 0.0 for label, _, _ in _ALERT_PATTERNS}}
+    sols = [s for s in (esol_log_s(m) for m in valid) if s is not None]
+    # logS >= -4 mol/L is the conventional aqueous-solubility floor for an
+    # orally useful compound (Lipinski-related rule of thumb).
+    out: dict[str, float] = {
+        "ESOL_logS": float(sum(sols) / len(sols)) if sols else 0.0,
+        "ESOL_Soluble%": (100.0 * sum(1 for s in sols if s >= -4.0) / len(sols)
+                          if sols else 0.0),
+    }
+    for label, _, _ in _ALERT_PATTERNS:
+        out[f"{label}%"] = 100.0 * sum(
+            1 for m in valid if label in admet_alerts(m)) / len(valid)
+    return out

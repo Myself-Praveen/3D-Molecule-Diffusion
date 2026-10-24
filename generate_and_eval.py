@@ -107,6 +107,18 @@ def main() -> None:
     parser.add_argument("--type_temperature", type=float, default=1.0,
                         help="Softmax temperature on type logits (>1 = more "
                              "diverse scaffolds, recommendation.md ScaffDiv #2)")
+    parser.add_argument("--steric_weight", type=float, default=0.0,
+                        help="Test-time steric (hard-sphere overlap) guidance "
+                             "strength w on the clean x0 estimate, applied to the "
+                             "last (1 - steric_start_frac) of the reverse steps "
+                             "(0 = off, bit-exact legacy sampler; plan "
+                             "Intervention 1)")
+    parser.add_argument("--steric_start_frac", type=float, default=0.7,
+                        help="Fraction of the reverse trajectory elapsed before "
+                             "steric guidance switches on (0.7 = last 30%%)")
+    parser.add_argument("--steric_sigma_scale", type=float, default=0.75,
+                        help="Contact distance as a fraction of the covalent-"
+                             "radii sum; 0.75 leaves every real bond untouched")
     parser.add_argument("--min_fragment_atoms", type=int, default=1,
                         help="Connectivity post-processing: drop provisional "
                              "distance-graph fragments smaller than this before "
@@ -299,6 +311,9 @@ def main() -> None:
             eta=args.eta,
             step_schedule=args.step_schedule,
             type_temperature=args.type_temperature,
+            steric_weight=args.steric_weight,
+            steric_start_frac=args.steric_start_frac,
+            steric_sigma_scale=args.steric_sigma_scale,
             cond=cond,
             guidance_scale=args.guidance_scale if cond is not None else 0.0,
         )
@@ -439,6 +454,9 @@ def main() -> None:
             checkpoint=args.checkpoint, num_samples=args.num_samples,
             ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
             step_schedule=args.step_schedule, relax=args.relax,
+            steric_weight=args.steric_weight,
+            steric_start_frac=args.steric_start_frac,
+            steric_sigma_scale=args.steric_sigma_scale,
             # Bond-perception chain protocol (plan workstreams A1–A4) —
             # recorded so any row can be regenerated with the exact lens.
             min_fragment_atoms=args.min_fragment_atoms,

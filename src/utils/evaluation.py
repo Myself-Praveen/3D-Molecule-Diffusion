@@ -20,6 +20,8 @@ from rdkit.Chem import rdMolDescriptors as MolDesc
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from rdkit.Geometry import Point3D
 
+from src.guidance import COVALENT_RADII as _COVALENT_RADII
+
 # QM9 atomic-number to RDKit-atom-symbol mapping.
 # QM9 uses 1-indexed atomic numbers; padding symbol is 0 (→ '*').
 _Z_TO_SYMBOL: dict[int, str] = {
@@ -40,10 +42,9 @@ _BOND_TYPE_MAP: dict[int, Chem.BondType] = {
 
 # Covalent radii (Cordero et al. 2008) in Å for the QM9 element set plus
 # common extras. A pair is bonded iff ``dist <= r_i + r_j + tolerance``.
-_COVALENT_RADII: dict[int, float] = {
-    1: 0.31, 6: 0.76, 7: 0.71, 8: 0.66, 9: 0.57,
-    15: 1.07, 16: 1.05, 17: 1.02, 35: 1.20, 53: 1.39,
-}
+# The table itself lives in ``src/guidance.py`` (imported above and re-exported
+# here) so the test-time steric guidance and the ruler that scores its output
+# can never disagree about an element's radius.
 _BOND_TOLERANCE: float = 0.45
 
 # Strategy 0.4 (docs/recommendation.md): per-element-pair bond tolerances.

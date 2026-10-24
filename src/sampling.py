@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from src.guidance import DEFAULT_SIGMA_SCALE, steric_guidance
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.flow import flow_time_embedding, flow_x0_pred
 from src.utils.graph import build_knn_graph
@@ -19,6 +20,23 @@ def _center_per_molecule(pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor
         .unsqueeze(-1)
     )
     return pos - sums[batch] / counts[batch]
+
+
+def _steric_active(
+    step_idx: int, num_steps: int, weight: float, start_frac: float
+) -> bool:
+    """Whether steric guidance applies on this reverse step.
+
+    Guidance is gated to the low-noise tail (``start_frac`` of the reverse
+    trajectory): at high noise the coordinates are dominated by the diffusion
+    noise, so a "clash" there is mostly a noise artefact and correcting it
+    would fight the denoiser instead of regularising it.
+    """
+    if weight <= 0.0:
+        return False
+    if num_steps <= 1:
+        return True
+    return (step_idx / (num_steps - 1)) >= start_frac
 
 
 def ddim_timestep_grid(
@@ -63,6 +81,10 @@ def sample_molecules(
     use_self_conditioning: bool | None = None,
     objective: str | None = None,
     type_temperature: float = 1.0,
+    steric_weight: float = 0.0,
+    steric_start_frac: float = 0.7,
+    steric_sigma_scale: float = DEFAULT_SIGMA_SCALE,
+    steric_max_step: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -99,6 +121,19 @@ def sample_molecules(
             Diversity" #2). ``>1`` flattens the distribution — more diverse
             atom types/scaffolds at some validity cost; ``<1`` sharpens it.
             ``1.0`` is the legacy behavior.
+        steric_weight: test-time steric (hard-sphere overlap) guidance
+            strength ``w`` applied to the **clean** x̂₀ estimate on the last
+            ``1 - steric_start_frac`` of the reverse steps — ``x̂₀ ← x̂₀ −
+            w·∇E_steric(x̂₀)`` (see ``src/guidance.py``). ``0.0`` (default)
+            is a bit-exact no-op, so every existing recipe and checkpoint is
+            unchanged.
+        steric_start_frac: fraction of the reverse trajectory elapsed before
+            guidance switches on (0.7 = the last 30% of steps, where bond
+            geometry is decided). Ignored when ``steric_weight == 0``.
+        steric_sigma_scale: contact distance as a fraction of the pair's
+            covalent-radii sum (0.75 leaves every real bond untouched; see
+            ``src/guidance.py``).
+        steric_max_step: per-atom cap (Å) on one guidance displacement.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -145,6 +180,16 @@ def sample_molecules(
     obj = (objective or getattr(model, "objective", "eps")).lower()
     if obj not in ("eps", "flow"):
         raise ValueError(f"Unknown objective={obj!r} (expected 'eps' or 'flow')")
+
+    def _guide(x0_pred: torch.Tensor, step_idx: int, num_steps: int) -> torch.Tensor:
+        """Steric guidance on the clean estimate (no-op when ``w <= 0``)."""
+        if not _steric_active(step_idx, num_steps, steric_weight, steric_start_frac):
+            return x0_pred
+        return steric_guidance(
+            x0_pred, batch, atom_types=z,
+            weight=steric_weight, sigma_scale=steric_sigma_scale,
+            max_step=steric_max_step, clamp=x0_clamp,
+        )
 
     def _update_types(type_logits: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """One categorical posterior step q(z_{t-1} | z_t, p0) for all atoms."""
@@ -215,6 +260,13 @@ def sample_molecules(
                 v_pred = torch.zeros_like(v_pred)
 
             x0_pred = flow_x0_pred(v_pred, pos, u_cur, batch=batch, clamp=x0_clamp)
+            guided = _guide(x0_pred, i, num_ode_steps)
+            if guided is not x0_pred:
+                # On the OT path x_u ≈ x0 at low u, so the clean-space
+                # correction is applied to the current point as well; the
+                # step is already capped by ``steric_max_step``.
+                pos = pos + (guided - x0_pred)
+                x0_pred = guided
             # Tier 2.1: refined x0 becomes the next step's self-conditioning
             # input, exactly as on the DDIM path.
             if self_cond:
@@ -274,6 +326,12 @@ def sample_molecules(
         x0_pred = clamp_x0(
             (pos - (1.0 - alpha_bar_t).sqrt() * noise_pred) / alpha_bar_t.sqrt()
         )
+        # Steric guidance acts on the CLEAN estimate: at t > 0 the coordinates
+        # still carry diffusion noise, so a "clash" there is partly the noise
+        # draw. The guided x0 is what the reverse step below consumes, so the
+        # DPS correction reaches the trajectory through the x0 term (and, at
+        # the low-noise steps this guidance is gated to, sqrt(ᾱ_prev) ≈ 1).
+        x0_pred = _guide(x0_pred, step_idx, len(timestep_iter))
         # Tier 2.1: the refined x0 becomes the next step's self-conditioning
         # input (Analog Bits iteration refinement).
         if self_cond:

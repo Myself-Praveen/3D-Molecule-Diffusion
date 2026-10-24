@@ -26,6 +26,12 @@ from src.fed.trainer import TYPE_TO_Z, extract_cond
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.models.flow import flow_interpolate
+from src.rl.dpo import (
+    build_reference_model,
+    cyclic_pair_batches,
+    dpo_loss,
+    load_preference_pairs,
+)
 from src.objectives import (
     diversity_regularizer,
     full_pair_index,
@@ -249,12 +255,30 @@ def train_diffusion(
         )
     model.objective = objective
 
+    # ---- RL / DPO stage (plan Step 2.3; default off, gated) -------------
+    # The plan's rule: no DPO until the Phase 1 geometry gate passes, because
+    # preference optimization on atom soup teaches the model to reward soup.
+    # Everything below is inert unless ``rl.enabled`` is set.
+    rl_cfg = cfg.get("rl") or {}
+    dpo_enabled = bool(rl_cfg.get("enabled", False))
+    dpo_weight = float(rl_cfg.get("dpo_weight", 0.0)) if dpo_enabled else 0.0
+    dpo_beta = float(rl_cfg.get("dpo_beta", 0.1))
+    if dpo_enabled and dpo_weight > 0.0 and objective != "eps":
+        raise ValueError(
+            "rl.dpo_weight > 0 requires diffusion.objective=eps — the DPO "
+            "reward is defined on the noise-prediction target"
+        )
+    # Stage hyperparameters: DPO fine-tunes from a checkpoint at ~10x smaller
+    # lr over a short budget; both keys are ignored when rl.enabled is false.
+    stage_lr = float(rl_cfg.get("dpo_lr", 0.0)) if dpo_enabled else 0.0
+    dpo_epochs = int(rl_cfg.get("dpo_epochs", 0)) if dpo_enabled else 0
+
     optimizer = Adam(
         model.parameters(),
-        lr=train_cfg["lr"],
+        lr=stage_lr if stage_lr > 0.0 else train_cfg["lr"],
         weight_decay=train_cfg.get("weight_decay", 1e-5),
     )
-    total_epochs = int(train_cfg["epochs"])
+    total_epochs = dpo_epochs if dpo_epochs > 0 else int(train_cfg["epochs"])
     # Strategy 1.4: warmup+cosine when warmup_epochs > 0, else plain cosine.
     scheduler = build_warmup_cosine_scheduler(
         optimizer, total_epochs,
@@ -374,6 +398,17 @@ def train_diffusion(
                     f"checkpoint={resume_geofix} vs current={geofix}. "
                     f"Refusing to resume."
                 )
+            # Plan Step 2.3: DPO changes what the weights are optimized
+            # against, so it carries the same resume hazard as geofix.
+            resume_dpo = bool(
+                resume_state.get("config", {}).get("rl", {}).get("enabled", False)
+            )
+            if resume_dpo != dpo_enabled:
+                raise ValueError(
+                    f"Resume config mismatch for rl.enabled: "
+                    f"checkpoint={resume_dpo} vs current={dpo_enabled}. "
+                    f"Refusing to resume."
+                )
             model.load_state_dict(resume_state["model_state_dict"])
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
             if "scheduler_state_dict" in resume_state:
@@ -400,6 +435,38 @@ def train_diffusion(
         print(f"  ! {last_path} exists but --resume not given; starting fresh "
               f"(will overwrite last.pt/best.pt as training progresses)")
 
+    # ---- RL stage setup (plan Step 2.3) ----------------------------------
+    dpo_iter = None
+    ref_model = None
+    if dpo_enabled and dpo_weight > 0.0:
+        init_ckpt = rl_cfg.get("init_checkpoint")
+        if init_ckpt and not resume:
+            state = torch.load(init_ckpt, map_location=device, weights_only=False)
+            model.load_state_dict(state.get("model_state_dict", state))
+            # EMA was constructed from the pre-load (random) weights; rebuild
+            # so the shadow tracks the fine-tuning start point.
+            if ema is not None:
+                ema = EMA(model, decay=ema_decay,
+                          warmup=int(train_cfg.get("ema_warmup_steps", 1000)))
+            print(f"  RL: fine-tuning starts from {init_ckpt}")
+        elif init_ckpt and resume:
+            print("  ! rl.init_checkpoint ignored — --resume restores the weights")
+        pair_file = rl_cfg.get("pair_file")
+        if not pair_file:
+            raise ValueError(
+                "rl.enabled=true requires rl.pair_file — generate it with "
+                "scripts/build_rl_pairs.py"
+            )
+        pairs = load_preference_pairs(pair_file)
+        ref_model = build_reference_model(
+            model, rl_cfg.get("dpo_ref_checkpoint"), device
+        )
+        dpo_iter = cyclic_pair_batches(
+            pairs, int(rl_cfg.get("dpo_batch_size", 32)), device
+        )
+        print(f"  RL/DPO: {len(pairs)} preference pairs, beta={dpo_beta}, "
+              f"weight={dpo_weight}, lr={optimizer.param_groups[0]['lr']:.2e}")
+
     # Cap this invocation to run_epochs (1-hour chunking). None = run to total_epochs.
     if run_epochs is not None and run_epochs > 0:
         end_epoch = min(total_epochs, start_epoch + run_epochs - 1)
@@ -417,6 +484,7 @@ def train_diffusion(
         total_pos_loss = 0.0
         total_type_loss = 0.0
         total_baseline = 0.0
+        total_dpo = 0.0
         for batch_data in train_loader:
             batch_data = batch_data.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -602,6 +670,18 @@ def train_diffusion(
                     node_h, batch_data.batch,
                 )
 
+            # Plan Step 2.3: DPO term. The loss is corrected (implicit reward =
+            # MSE_ref - MSE_model) and evaluated on noised coordinates inside
+            # dpo_loss, so the denoiser sees the x_t distribution it was
+            # trained on; the reference model never receives gradients.
+            dpo_term = None
+            if dpo_weight > 0.0:
+                dpo_term = dpo_loss(
+                    model, ref_model, coord_ddpm, next(dpo_iter),
+                    beta=dpo_beta, objective=objective,
+                )
+                loss = loss + dpo_weight * dpo_term
+
             loss.backward()
 
             # NaN/Inf guard: skip a batch whose gradients exploded instead of
@@ -625,6 +705,8 @@ def train_diffusion(
             total_pos_loss += pos_loss.item()
             total_type_loss += type_loss.item()
             total_baseline += batch_baseline
+            if dpo_term is not None:
+                total_dpo += float(dpo_term.detach())
 
         scheduler.step()
         avg_pos_loss = total_pos_loss / len(train_loader)
@@ -711,6 +793,8 @@ def train_diffusion(
             f"val_pos={avg_val_pos:.4f}  val_type={avg_val_type:.4f}  val={avg_val_loss:.4f} | "
             f"lr={lr_now:.2e}"
             + (f" | quick_valid={quick_valid:.1f}%" if quick_valid is not None else "")
+            + (f" | dpo={total_dpo / max(len(train_loader), 1):.4f}"
+               if dpo_weight > 0.0 else "")
         )
 
         # ---- Checkpointing (update best/counter FIRST, then save last.pt once) ----

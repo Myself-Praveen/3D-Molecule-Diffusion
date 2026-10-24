@@ -59,6 +59,23 @@ conditioning:
   label_dropout: 0.1
   guidance_scale: 2.0
 
+# Phase 2 / plan Step 2.3 — DPO preference fine-tuning. GATED OFF:
+# the plan's own rule is that no RL runs until the Phase 1 geometry gate
+# passes, because preference optimization on atom soup teaches the model to
+# reward atom soup. Flip enabled: true only after that gate, with a
+# pair_file produced by scripts/build_rl_pairs.py.
+rl:
+  enabled: false
+  pair_file: outputs/rl_pairs/pairs.pt     # from scripts/build_rl_pairs.py
+  init_checkpoint: checkpoints/central_v5_bbb/best.pt   # where DPO starts
+  dpo_ref_checkpoint: checkpoints/central_v5_bbb/best.pt # frozen reference
+  dpo_weight: 0.1
+  dpo_beta: 0.1
+  dpo_batch_size: 32
+  dpo_epochs: 100
+  dpo_lr: 1.0e-5        # 10x below the 2e-4 pre-training LR
+  dpo_pair_type: seed_matched   # seed_matched | valid_vs_invalid
+
 diffusion:
   num_steps: 1000
   schedule: cosine              # V4 recipe (bbb_full used linear)

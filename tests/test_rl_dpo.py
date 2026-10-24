@@ -204,3 +204,24 @@ class TestDPOLossSign:
     def test_type_ddpm_is_not_required(self):
         """dpo_loss only needs the coordinate schedule (types pass through)."""
         assert TypeDDPM is not None
+
+
+class TestTrainIntegration:
+    def test_train_wires_the_dpo_stage(self):
+        import inspect
+
+        from train import train_diffusion
+
+        src = inspect.getsource(train_diffusion)
+        for needle in ("dpo_loss(", "rl.pair_file", "rl.enabled",
+                       "dpo_ref_checkpoint", "dpo_lr", "dpo_epochs"):
+            assert needle in src, f"train.py must reference {needle}"
+
+    def test_shipped_config_gates_rl_off(self):
+        """The plan's rule: no DPO until the geometry gate passes."""
+        import yaml
+
+        with open("configs/central_v5_bbb.yaml") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["rl"]["enabled"] is False
+        assert cfg["rl"]["dpo_beta"] == 0.1

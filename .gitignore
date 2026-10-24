@@ -19,7 +19,9 @@ logs/*
 .idea/
 .vscode/
 P1_5.pdf
-P1_5.pdf:Zone.Identifier# project doc tree (AsciiDoc + generated assets), rendered to build/
+P1_5.pdf:Zone.Identifier
+
+# project doc tree (AsciiDoc + generated assets), rendered to build/
 doc/build/
 
 # deploy helper (isolated env + wrapper); the env dir is large and machine-local

@@ -79,6 +79,7 @@ def x0_valence_penalty(
     x0_clamp: float = 5.0,
     objective: str = "eps",
     renorm_live: bool = False,
+    x0_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """λ₂ validity pressure that actually trains geometry.
 
@@ -96,6 +97,11 @@ def x0_valence_penalty(
     ``renorm_live`` switches the demand side to the §13.14 live-class
     renormalization (see ``soft_valence_penalty``); default ``False`` keeps the
     original behaviour for every existing arm.
+
+    ``x0_scale`` is the per-atom ``(N, 1)`` factor that maps the model's
+    coordinate space back to Ångström — required when the DDPM runs with
+    ``radius_norm="atom_count"`` (plan Intervention 3), because every
+    threshold inside this penalty (bond windows, cutoffs) is in Å.
     """
     if lambda_weight <= 0.0:
         return torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
@@ -108,6 +114,8 @@ def x0_valence_penalty(
         noise_pred, noisy_pos, t, batch,
         alpha_bars=alpha_bars, objective=objective,
     ).clamp(-x0_clamp, x0_clamp)
+    if x0_scale is not None:
+        x0_pred = x0_pred * x0_scale.to(x0_pred.dtype)
     x0_pred = x0_pred[keep]
     probs = torch.softmax(type_logits, dim=-1).detach()[keep]
     _, remap = torch.unique(batch[keep], return_inverse=True)
@@ -277,6 +285,7 @@ def x0_geometry_consistency(
     lambda_pairdist: float = 1.0,
     tau: int = 200,
     objective: str = "eps",
+    x0_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Gated shape-aware terms on the denoised ``x0`` (Task 2).
 
@@ -287,6 +296,11 @@ def x0_geometry_consistency(
     are dropped rather than propagated — the same rule the samplers apply.
     Weights default to 1.0 but the caller only invokes this when the gated
     ``training.geofix`` flag is on, so every existing arm is unchanged.
+
+    ``x0_scale`` (per-atom, ``(N, 1)``) maps the prediction back to Ångström
+    when the DDPM uses ``radius_norm="atom_count"``; ``target_pos`` is always
+    in Å, so without the scale the two sides would be compared in different
+    units.
     """
     zero = torch.zeros((), dtype=noise_pred.dtype, device=noise_pred.device)
     if lambda_kabsch <= 0.0 and lambda_pairdist <= 0.0:
@@ -299,7 +313,10 @@ def x0_geometry_consistency(
     x0_pred = x0_from_prediction(
         noise_pred, noisy_pos, t, batch,
         alpha_bars=alpha_bars, objective=objective,
-    )[keep]
+    )
+    if x0_scale is not None:
+        x0_pred = x0_pred * x0_scale.to(x0_pred.dtype)
+    x0_pred = x0_pred[keep]
     target = target_pos[keep]
     sub_batch = batch[keep]
     _, remap = torch.unique(sub_batch, return_inverse=True)

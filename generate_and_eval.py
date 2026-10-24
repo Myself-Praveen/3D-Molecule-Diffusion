@@ -220,13 +220,13 @@ def main() -> None:
     model.objective = objective
     model.load_state_dict(_load_model_weights(ckpt, model))
 
-    coord_ddpm = CenteredDDPM(
-        num_steps=diff_cfg["num_steps"],
-        beta_start=diff_cfg["beta_start"],
-        beta_end=diff_cfg["beta_end"],
-        device=device,
-        schedule=diff_cfg.get("schedule", "linear"),
-    )
+    # Schedule + coordinate normalization come from the checkpoint's own
+    # diffusion block (``from_config``), so a radius-normalized checkpoint is
+    # sampled in the same coordinate space it was trained in.
+    coord_ddpm = CenteredDDPM.from_config(diff_cfg, device=device)
+    if coord_ddpm.radius_norm != "none":
+        print(f"Coordinate normalization: {coord_ddpm.radius_norm} "
+              f"(R(N) = {coord_ddpm.radius_coeff:.3f} * N^(1/3) Å)")
     type_ddpm = TypeDDPM(
         num_steps=diff_cfg["num_steps"],
         beta_start=diff_cfg["beta_start"],

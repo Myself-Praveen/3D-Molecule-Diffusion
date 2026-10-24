@@ -293,6 +293,9 @@ def sample_molecules(
             z = _update_types(type_logits, t)
 
         pos = _center_per_molecule(pos, batch)
+        # Radius normalization (plan Intervention 3): the whole reverse process
+        # ran in size-normalized space; return Ångström.
+        pos = coord_ddpm.denormalize(pos, batch)
         return pos.cpu(), z.cpu()
 
     for step_idx, t_cur in enumerate(timestep_iter):
@@ -397,4 +400,7 @@ def sample_molecules(
         z = _update_types(type_logits, t)
 
     pos = _center_per_molecule(pos, batch)
+    # Radius normalization (plan Intervention 3): back from the model's
+    # size-normalized space to Ångström.
+    pos = coord_ddpm.denormalize(pos, batch)
     return pos.cpu(), z.cpu()

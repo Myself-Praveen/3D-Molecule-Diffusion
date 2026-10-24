@@ -123,11 +123,8 @@ def probe(tag: str, cfg_path: str, ckpt_path: str, dataset: str,
                       weights_only=False)
     model, cfg = _build_model(ckpt, cfg, device)
     dd = cfg["diffusion"]
-    coord_ddpm = CenteredDDPM(
-        num_steps=dd["num_steps"], beta_start=dd["beta_start"],
-        beta_end=dd["beta_end"], device=device,
-        schedule=dd.get("schedule", "linear"),
-    )
+    # Match the checkpoint's coordinate space (radius normalization included).
+    coord_ddpm = CenteredDDPM.from_config(dd, device=device)
     type_ddpm = TypeDDPM(
         num_steps=dd["num_steps"], beta_start=dd["beta_start"],
         beta_end=dd["beta_end"], device=device,

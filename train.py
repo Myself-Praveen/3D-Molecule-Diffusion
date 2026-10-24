@@ -217,13 +217,7 @@ def train_diffusion(
     )
 
     # Models ----------------------------------------------------------------
-    coord_ddpm = CenteredDDPM(
-        num_steps=diff_cfg["num_steps"],
-        beta_start=diff_cfg["beta_start"],
-        beta_end=diff_cfg["beta_end"],
-        device=device,
-        schedule=diff_cfg.get("schedule", "linear"),
-    )
+    coord_ddpm = CenteredDDPM.from_config(diff_cfg, device=device)
     type_ddpm = TypeDDPM(
         num_steps=diff_cfg["num_steps"],
         beta_start=diff_cfg["beta_start"],
@@ -339,6 +333,19 @@ def train_diffusion(
                 raise ValueError(
                     f"Resume config mismatch for diffusion.objective: "
                     f"checkpoint={resume_obj} vs current={objective}. "
+                    f"Refusing to resume."
+                )
+            # Plan Intervention 3: the coordinate system is baked into the
+            # weights exactly like the schedule — a none↔atom_count switch
+            # changes what every trained coordinate means.
+            resume_norm = str(
+                resume_state.get("config", {}).get("diffusion", {})
+                .get("radius_norm", "none")
+            )
+            if resume_norm != coord_ddpm.radius_norm:
+                raise ValueError(
+                    f"Resume config mismatch for diffusion.radius_norm: "
+                    f"checkpoint={resume_norm} vs current={coord_ddpm.radius_norm}. "
                     f"Refusing to resume."
                 )
             # §13.14: the λ₂ demand side is baked into the loss the weights
@@ -465,6 +472,14 @@ def train_diffusion(
                     batch_data.pos, t, batch_data.batch,
                 )
                 batch_baseline = 1.0  # E[||noise - 0||^2] for unit-variance noise
+            # Plan Intervention 3: with radius-normalized coordinates the model
+            # predicts x0 in normalized units, while every geometry threshold
+            # below is in Å — pass the per-atom scale so the penalties do the
+            # comparison in Å. ``None`` (flow path, which never normalizes)
+            # keeps the legacy behaviour.
+            x0_scale = None
+            if objective != "flow" and coord_ddpm.radius_norm != "none":
+                x0_scale = coord_ddpm.per_atom_radius(batch_data.batch)
 
             # Atom-type diffusion (EDM-style categorical). batch= is required:
             # without it _atom_batch broadcasts one timestep per ATOM, so the
@@ -566,6 +581,7 @@ def train_diffusion(
                     tau=int(train_cfg.get("valence_tau", 200)),
                     objective=objective,
                     renorm_live=valence_renorm_live,
+                    x0_scale=x0_scale,
                 )
             # Task 2 geometry-consistency terms: rotation-invariant shape loss
             # (Kabsch-aligned MSE) plus an explicit interatomic-distance loss,
@@ -579,6 +595,7 @@ def train_diffusion(
                     lambda_pairdist=geofix_pairdist,
                     tau=geofix_tau,
                     objective=objective,
+                    x0_scale=x0_scale,
                 )
             if lambda_diversity > 0.0:
                 loss = loss + lambda_diversity * diversity_regularizer(

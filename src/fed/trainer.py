@@ -239,6 +239,11 @@ class LocalTrainer:
         noisy_pos, actual_noise = self.coord_ddpm.add_noise(
             batch_data.pos, t, batch_data.batch,
         )
+        # Plan Intervention 3: radius-normalized coordinates make the model's
+        # x0 dimensionless; the geometry penalties below work in Å.
+        x0_scale = None
+        if self.objective != "flow" and self.coord_ddpm.radius_norm != "none":
+            x0_scale = self.coord_ddpm.per_atom_radius(batch_data.batch)
         noisy_types = self.type_ddpm.sample_noisy_types(
             z_idx, t, self.cfg["model"]["num_types"], batch_data.batch,
         )
@@ -309,6 +314,7 @@ class LocalTrainer:
                 tau=int(self.cfg["training"].get("valence_tau", 200)),
                 objective=self.objective,
                 renorm_live=valence_renorm_live,
+                x0_scale=x0_scale,
             )
         # Task 2 geometry-consistency terms (see x0_geometry_consistency).
         if geofix:
@@ -322,6 +328,7 @@ class LocalTrainer:
                     "geofix_pairdist_weight", 1.0)),
                 tau=int(self.cfg["training"].get("geofix_tau", 200)),
                 objective=self.objective,
+                x0_scale=x0_scale,
             )
         if lambda_diversity > 0.0:
             loss = loss + lambda_diversity * diversity_regularizer(

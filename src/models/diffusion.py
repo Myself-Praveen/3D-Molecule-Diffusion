@@ -16,6 +16,18 @@ Strategy 1.6 (docs/recommendation.md): ``schedule="sigmoid"`` adds the
 sigmoid ᾱ schedule, which distributes noise even more evenly across the
 low-noise end than cosine — molecular coordinates live in a narrow ~5 Å box,
 not the 0-255 pixel range the cosine schedule was tuned for.
+
+Plan Intervention 3 (``radius_norm="atom_count"``): EDM-style coordinate
+normalization. Every molecule's coordinates are divided by its radius
+``R(N) = radius_coeff · N^(1/3)`` **before** the forward process and multiplied
+back after the reverse process, so a unit-variance noise draw is the same
+*relative* corruption for a 9-atom QM9 molecule and a 40-atom BBBP one.
+``R`` depends only on the atom count, which is exactly what makes it usable at
+sampling time — the true conformer radius is unknown there (the obvious
+"scale by the ground-truth radius" formulation in the original plan cannot be
+run on a generated molecule at all). ``radius_coeff`` is the only fitted
+constant; 1.06 Å is the measured median of ``rms_radius / N^(1/3)`` over the
+BBBP training set (mean 3.59 Å at mean N = 40.9).
 """
 
 from __future__ import annotations
@@ -129,12 +141,93 @@ class CenteredDDPM:
         beta_end: float = 0.02,
         device: str | torch.device = "cuda",
         schedule: str = "linear",
+        radius_norm: str = "none",
+        radius_coeff: float = 1.06,
     ) -> None:
         self.num_steps = num_steps
         self.device = torch.device(device)
         self.betas, self.alphas, self.alpha_bars = _build_schedule(
             num_steps, beta_start, beta_end, schedule, self.device
         )
+        if radius_norm not in ("none", "atom_count"):
+            raise ValueError(
+                f"Unknown radius_norm={radius_norm!r} "
+                f"(expected 'none' or 'atom_count')"
+            )
+        self.radius_norm = radius_norm
+        self.radius_coeff = float(radius_coeff)
+        if self.radius_norm != "none" and self.radius_coeff <= 0.0:
+            raise ValueError(
+                f"radius_coeff must be > 0 for radius_norm={radius_norm!r}, "
+                f"got {radius_coeff}"
+            )
+
+    @classmethod
+    def from_config(
+        cls, diff_cfg: dict, device: str | torch.device = "cuda"
+    ) -> "CenteredDDPM":
+        """Build the schedule from a ``diffusion:`` config block.
+
+        Single source of truth for every entry point (``train.py``,
+        ``fed_train.py``, ``generate_and_eval.py`` and the diagnostic scripts)
+        so a checkpoint can never be evaluated under a different coordinate
+        normalization than the one it was trained with.
+        """
+        return cls(
+            num_steps=diff_cfg["num_steps"],
+            beta_start=diff_cfg["beta_start"],
+            beta_end=diff_cfg["beta_end"],
+            device=device,
+            schedule=diff_cfg.get("schedule", "linear"),
+            radius_norm=str(diff_cfg.get("radius_norm", "none")),
+            radius_coeff=float(diff_cfg.get("radius_coeff", 1.06)),
+        )
+
+    # -- Coordinate normalization (plan Intervention 3) ----------------------
+
+    def molecule_radius(
+        self,
+        atom_counts: torch.Tensor,
+        device: str | torch.device | None = None,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Per-molecule coordinate scale ``R(N)`` in Ångström.
+
+        ``R(N) = radius_coeff · N^(1/3)`` for ``radius_norm="atom_count"``;
+        all-ones (the identity transform) otherwise. Depends only on the atom
+        count, so the training and sampling paths can agree without ever
+        seeing the ground-truth conformer at generation time.
+        """
+        counts = torch.as_tensor(
+            atom_counts, device=device or self.device, dtype=dtype
+        ).reshape(-1)
+        if self.radius_norm == "none":
+            return torch.ones_like(counts)
+        return self.radius_coeff * counts.clamp_min(1.0).pow(1.0 / 3.0)
+
+    def per_atom_radius(
+        self, batch: torch.Tensor, num_graphs: int | None = None
+    ) -> torch.Tensor:
+        """Per-atom coordinate scale, shape ``(N, 1)``."""
+        if num_graphs is None:
+            num_graphs = int(batch.max().item()) + 1 if batch.numel() else 0
+        counts = _scatter_counts(batch, num_graphs, batch.dtype, batch.device)
+        radius = self.molecule_radius(
+            counts, device=batch.device, dtype=torch.float32
+        )
+        return radius[batch].unsqueeze(-1)
+
+    def normalize(self, pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        """Map Å coordinates into the model's normalized coordinate space."""
+        if self.radius_norm == "none":
+            return pos
+        return pos / self.per_atom_radius(batch).to(pos.dtype)
+
+    def denormalize(self, pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        """Map normalized coordinates back to Ångström."""
+        if self.radius_norm == "none":
+            return pos
+        return pos * self.per_atom_radius(batch).to(pos.dtype)
 
     def add_noise(
         self,
@@ -145,11 +238,18 @@ class CenteredDDPM:
         """Add centered Gaussian noise, supporting one timestep per molecule.
 
         Returns ``(noisy_pos, noise)`` where ``noise`` has zero mean inside
-        every individual molecule (translation-invariant targets).
+        every individual molecule (translation-invariant targets). With
+        ``radius_norm="atom_count"`` the returned ``noisy_pos`` lives in the
+        normalized space (``x₀`` is divided by ``R(N)`` first), while the
+        noise target is unchanged — it is already unit-scale by construction.
         """
         if batch is None:
             batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
         num_graphs = int(batch.max().item()) + 1
+        # EDM-style radius normalization: the forward process acts on
+        # size-normalized coordinates, so one noise schedule fits every
+        # molecule size (plan Intervention 3).
+        pos = self.normalize(pos, batch)
 
         alpha_bar = self.alpha_bars[t].to(device=pos.device)
         atom_alpha_bar = alpha_bar[batch]

@@ -118,7 +118,7 @@ def run_federated(
         **{k: diff_cfg[k] for k in ("num_steps", "beta_start", "beta_end")},
         "schedule": diff_cfg.get("schedule", "linear"),
     }
-    coord_ddpm = CenteredDDPM(device=device, **ddpm_kwargs)
+    coord_ddpm = CenteredDDPM.from_config(diff_cfg, device=device)
     type_ddpm = TypeDDPM(device=device, **ddpm_kwargs)
 
     trainers = [

@@ -61,11 +61,9 @@ def _sample(n_samples: int, model, cfg: dict, seed: int, ddim_steps: int):
     from src.sampling import sample_molecules
 
     dd = cfg["diffusion"]
-    coord_ddpm = CenteredDDPM(
-        num_steps=dd["num_steps"], beta_start=dd["beta_start"],
-        beta_end=dd["beta_end"], device=DEVICE,
-        schedule=dd.get("schedule", "linear"),
-    )
+    # Same coordinate system as the checkpoint was trained in (including
+    # radius normalization when the arm used it).
+    coord_ddpm = CenteredDDPM.from_config(dd, device=DEVICE)
     type_ddpm = TypeDDPM(
         num_steps=dd["num_steps"], beta_start=dd["beta_start"],
         beta_end=dd["beta_end"], device=DEVICE,

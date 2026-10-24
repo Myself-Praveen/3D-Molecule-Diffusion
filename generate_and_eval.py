@@ -116,18 +116,30 @@ def main() -> None:
                         help="Spatial-clustering fallback (plan Intervention 2): "
                              "keep only the largest distance-graph component per "
                              "molecule. Post-hoc correction, not a generation fix")
+    parser.add_argument("--steric_enabled", action="store_true",
+                        help="Turn on test-time steric guidance at "
+                             "--steric_max_weight (plan T1-T4 test matrix; "
+                             "equivalent to --steric_weight > 0)")
     parser.add_argument("--steric_weight", type=float, default=0.0,
-                        help="Test-time steric (hard-sphere overlap) guidance "
-                             "strength w on the clean x0 estimate, applied to the "
-                             "last (1 - steric_start_frac) of the reverse steps "
-                             "(0 = off, bit-exact legacy sampler; plan "
-                             "Intervention 1)")
-    parser.add_argument("--steric_start_frac", type=float, default=0.7,
-                        help="Fraction of the reverse trajectory elapsed before "
-                             "steric guidance switches on (0.7 = last 30%%)")
+                        help="Peak steric guidance weight w on the clean x0 "
+                             "estimate (0 = off, bit-exact legacy sampler; "
+                             "overrides --steric_max_weight when > 0)")
+    parser.add_argument("--steric_max_weight", type=float, default=1.0,
+                        help="Peak ramp weight used with --steric_enabled "
+                             "(plan T3 primary setting)")
+    parser.add_argument("--steric_start_frac", "--steric_ramp_start",
+                        type=float, default=0.7,
+                        help="Fraction of the reverse trajectory elapsed when "
+                             "the guidance ramp starts (0.7 = last 30%%; "
+                             "plan --steric_ramp_start)")
     parser.add_argument("--steric_sigma_scale", type=float, default=0.75,
                         help="Contact distance as a fraction of the covalent-"
                              "radii sum; 0.75 leaves every real bond untouched")
+    parser.add_argument("--steric_k_rep", type=float, default=1.0,
+                        help="Overall strength of the repulsive energy")
+    parser.add_argument("--steric_r_clash", type=float, default=None,
+                        help="Absolute severe-overlap radius in A (plan mode: "
+                             "1.1) added on top of the per-pair contact term")
     parser.add_argument("--min_fragment_atoms", type=int, default=1,
                         help="Connectivity post-processing: drop provisional "
                              "distance-graph fragments smaller than this before "
@@ -169,6 +181,13 @@ def main() -> None:
                              "metrics into the metric table / metrics.json and "
                              "stores the PASS-FAIL verdict as lab_gate")
     args = parser.parse_args()
+
+    # Plan Step 1.2 test matrix: --steric_enabled is the convenience switch
+    # (peak weight = --steric_max_weight) while an explicit --steric_weight
+    # always wins, so both spellings of the same experiment agree.
+    args.steric_weight = max(float(args.steric_weight), 0.0)
+    if args.steric_weight <= 0.0 and args.steric_enabled:
+        args.steric_weight = float(args.steric_max_weight)
 
     # Seed torch's GLOBAL generator — the sampler's randn noise draws come
     # from it, while --seed previously only reached the numpy atom-count rng.
@@ -323,6 +342,8 @@ def main() -> None:
             steric_weight=args.steric_weight,
             steric_start_frac=args.steric_start_frac,
             steric_sigma_scale=args.steric_sigma_scale,
+            steric_k_rep=args.steric_k_rep,
+            steric_r_clash=args.steric_r_clash,
             coord_temperature=args.coord_temperature,
             cond=cond,
             guidance_scale=args.guidance_scale if cond is not None else 0.0,
@@ -468,6 +489,8 @@ def main() -> None:
             steric_weight=args.steric_weight,
             steric_start_frac=args.steric_start_frac,
             steric_sigma_scale=args.steric_sigma_scale,
+            steric_k_rep=args.steric_k_rep,
+            steric_r_clash=args.steric_r_clash,
             coord_temperature=args.coord_temperature,
             keep_largest_fragment=args.keep_largest_fragment,
             # Bond-perception chain protocol (plan workstreams A1–A4) —

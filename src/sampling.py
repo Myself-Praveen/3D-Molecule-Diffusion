@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import torch
 
-from src.guidance import DEFAULT_SIGMA_SCALE, steric_guidance
+from src.guidance import (
+    DEFAULT_K_REP,
+    DEFAULT_SIGMA_SCALE,
+    steric_guidance,
+    steric_guidance_weight,
+)
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.flow import flow_time_embedding, flow_x0_pred
 from src.utils.graph import build_knn_graph
@@ -20,23 +25,6 @@ def _center_per_molecule(pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor
         .unsqueeze(-1)
     )
     return pos - sums[batch] / counts[batch]
-
-
-def _steric_active(
-    step_idx: int, num_steps: int, weight: float, start_frac: float
-) -> bool:
-    """Whether steric guidance applies on this reverse step.
-
-    Guidance is gated to the low-noise tail (``start_frac`` of the reverse
-    trajectory): at high noise the coordinates are dominated by the diffusion
-    noise, so a "clash" there is mostly a noise artefact and correcting it
-    would fight the denoiser instead of regularising it.
-    """
-    if weight <= 0.0:
-        return False
-    if num_steps <= 1:
-        return True
-    return (step_idx / (num_steps - 1)) >= start_frac
 
 
 def ddim_timestep_grid(
@@ -84,6 +72,8 @@ def sample_molecules(
     steric_weight: float = 0.0,
     steric_start_frac: float = 0.7,
     steric_sigma_scale: float = DEFAULT_SIGMA_SCALE,
+    steric_k_rep: float = DEFAULT_K_REP,
+    steric_r_clash: float | None = None,
     steric_max_step: float = 0.5,
     coord_temperature: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -123,17 +113,26 @@ def sample_molecules(
             atom types/scaffolds at some validity cost; ``<1`` sharpens it.
             ``1.0`` is the legacy behavior.
         steric_weight: test-time steric (hard-sphere overlap) guidance
-            strength ``w`` applied to the **clean** x̂₀ estimate on the last
-            ``1 - steric_start_frac`` of the reverse steps — ``x̂₀ ← x̂₀ −
-            w·∇E_steric(x̂₀)`` (see ``src/guidance.py``). ``0.0`` (default)
-            is a bit-exact no-op, so every existing recipe and checkpoint is
+            strength ``w`` applied to the **clean** x̂₀ estimate — ``x̂₀ ← x̂₀ −
+            w·∇E_steric(x̂₀)`` (see ``src/guidance.py``). ``w`` is the *peak*
+            of a linear ramp that starts at ``steric_start_frac`` of the
+            reverse trajectory and reaches ``steric_weight`` at the final
+            step (``steric_guidance_weight``); ``0.0`` (default) is a
+            bit-exact no-op, so every existing recipe and checkpoint is
             unchanged.
         steric_start_frac: fraction of the reverse trajectory elapsed before
-            guidance switches on (0.7 = the last 30% of steps, where bond
-            geometry is decided). Ignored when ``steric_weight == 0``.
+            the ramp starts (0.7 = the last 30% of steps, where bond geometry
+            is decided). Indexed by ``step_idx`` counting UP, not by ``t_cur``
+            counting down. Ignored when ``steric_weight == 0``.
         steric_sigma_scale: contact distance as a fraction of the pair's
             covalent-radii sum (0.75 leaves every real bond untouched; see
             ``src/guidance.py``).
+        steric_k_rep: overall strength of the repulsive energy (multiplies
+            both the contact-distance and the ``steric_r_clash`` term).
+        steric_r_clash: optional absolute severe-overlap radius (A), the
+            plan's 1.1 A mode — an extra element-independent term on top of
+            the per-pair contact distance. ``None`` (default) uses the
+            per-pair term alone.
         steric_max_step: per-atom cap (Å) on one guidance displacement.
         coord_temperature: coordinate-space analogue of ``type_temperature``
             (plan Intervention 2): after each reverse step, add Gaussian
@@ -190,12 +189,21 @@ def sample_molecules(
         raise ValueError(f"Unknown objective={obj!r} (expected 'eps' or 'flow')")
 
     def _guide(x0_pred: torch.Tensor, step_idx: int, num_steps: int) -> torch.Tensor:
-        """Steric guidance on the clean estimate (no-op when ``w <= 0``)."""
-        if not _steric_active(step_idx, num_steps, steric_weight, steric_start_frac):
+        """Steric guidance on the clean estimate (no-op when ``w <= 0``).
+
+        The weight comes from ``steric_guidance_weight``: a linear ramp over
+        the last ``1 - steric_start_frac`` of the *sampling* steps.
+        """
+        w = steric_guidance_weight(
+            step_idx, num_steps,
+            ramp_start_frac=steric_start_frac, max_weight=steric_weight,
+        )
+        if w <= 0.0:
             return x0_pred
         return steric_guidance(
-            x0_pred, batch, atom_types=z,
-            weight=steric_weight, sigma_scale=steric_sigma_scale,
+            x0_pred, batch, atom_types=z, weight=w,
+            sigma_scale=steric_sigma_scale, k_rep=steric_k_rep,
+            r_clash=steric_r_clash,
             max_step=steric_max_step, clamp=x0_clamp,
         )
 

@@ -74,6 +74,35 @@ DEFAULT_SIGMA_SCALE: float = 0.75
 DEFAULT_K_REP: float = 1.0
 
 
+def steric_guidance_weight(
+    step_idx: int,
+    num_sampling_steps: int,
+    ramp_start_frac: float = 0.7,
+    max_weight: float = 1.0,
+) -> float:
+    """Guidance weight for one reverse step — 0 until the ramp starts, then
+    linear in the *sampling* progress.
+
+    ``step_idx`` counts UP (0 → num_sampling_steps-1) while the timestep
+    ``t_cur`` counts DOWN (T-1 → 0), so the ramp must be indexed by
+    ``step_idx``: guidance in the last ``1 - ramp_start_frac`` of sampling
+    means ``step_idx / (N - 1) > ramp_start_frac``. Gating on ``t_cur`` (as
+    the original plan did with ``t_cur < steric_start_step AND frac > 0.7``)
+    can never be true, because those two conditions are mutually exclusive.
+
+    A ramp rather than a step is deliberate: a hard switch at 70% injects a
+    displacement discontinuity into exactly the low-noise steps where bond
+    lengths are being settled.
+    """
+    if max_weight <= 0.0 or num_sampling_steps < 1:
+        return 0.0
+    progress = step_idx / max(num_sampling_steps - 1, 1)
+    if progress <= ramp_start_frac:
+        return 0.0
+    ramp = (progress - ramp_start_frac) / max(1.0 - ramp_start_frac, 1e-8)
+    return float(max_weight) * ramp
+
+
 def atom_radii(
     atom_types: torch.Tensor | None,
     num_atoms: int,
@@ -114,6 +143,7 @@ def steric_energy(
     atom_types: torch.Tensor | None = None,
     sigma_scale: float = DEFAULT_SIGMA_SCALE,
     k_rep: float = DEFAULT_K_REP,
+    r_clash: float | None = None,
 ) -> torch.Tensor:
     """Hard-sphere overlap energy of a batch of molecules (Å² units).
 
@@ -125,6 +155,13 @@ def steric_energy(
             ~0.6 the term is nearly inert; above ~0.9 it starts repelling
             compressed real bonds (see the module docstring).
         k_rep: overall strength.
+        r_clash: optional **absolute** severe-overlap radius (A). When set
+            (the plan's 1.1 A), pairs below it are additionally penalised
+            regardless of element — a second, element-independent term added
+            on top of the contact-distance one. Left ``None`` by default,
+            because a flat 1.1 A threshold lands *inside* real C-H bonds
+            (1.06--1.10 A) while missing nothing the per-pair contact term
+            already catches.
 
     Returns:
         Scalar tensor, differentiable w.r.t. ``pos``. Each molecule is
@@ -159,6 +196,8 @@ def steric_energy(
         d = torch.sqrt(torch.cdist(p, p).square() + 1e-12)
         sigma = sigma_scale * (r.unsqueeze(0) + r.unsqueeze(1))
         clash = (sigma - d).clamp_min(0.0)
+        if r_clash is not None:
+            clash = clash + (float(r_clash) - d).clamp_min(0.0)
         if n not in eye_cache:
             eye_cache[n] = torch.eye(n, device=pos.device, dtype=pos.dtype)
         off_diagonal = 1.0 - eye_cache[n]
@@ -173,6 +212,7 @@ def steric_guidance(
     weight: float = 0.0,
     sigma_scale: float = DEFAULT_SIGMA_SCALE,
     k_rep: float = DEFAULT_K_REP,
+    r_clash: float | None = None,
     max_step: float = 0.5,
     clamp: float | None = None,
 ) -> torch.Tensor:
@@ -206,7 +246,7 @@ def steric_guidance(
         x = x0.detach().requires_grad_(True)
         energy = steric_energy(
             x, batch, atom_types=atom_types,
-            sigma_scale=sigma_scale, k_rep=k_rep,
+            sigma_scale=sigma_scale, k_rep=k_rep, r_clash=r_clash,
         )
         (grad,) = torch.autograd.grad(energy, x, allow_unused=True)
     if grad is None:

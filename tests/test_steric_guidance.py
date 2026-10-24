@@ -21,6 +21,7 @@ from src.guidance import (
     atom_radii,
     steric_energy,
     steric_guidance,
+    steric_guidance_weight,
 )
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
@@ -128,6 +129,49 @@ class TestEnergy:
         e = steric_energy(torch.zeros(0, 3), torch.zeros(0, dtype=torch.long))
         assert e.item() == 0.0
 
+    def test_r_clash_adds_an_absolute_severe_overlap_term(self):
+        """Plan T-mode: r_clash=1.1 charges a 1.0 A contact that the C-H
+        contact distance (0.81 A) alone would ignore."""
+        pos = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        batch = torch.zeros(2, dtype=torch.long)
+        z = torch.tensor([1, 1], dtype=torch.long)  # H-H contact = 0.62 A
+        base = steric_energy(pos, batch, atom_types=z).item()
+        with_clash = steric_energy(
+            pos, batch, atom_types=z, r_clash=1.1
+        ).item()
+        assert base == 0.0 and with_clash > 0.0
+
+
+class TestGuidanceRamp:
+    def test_zero_before_the_ramp_point(self):
+        # progress = step_idx / 9; 0, 0.33, 0.67 are all <= 0.7, 7/9 = 0.78 is not
+        for step_idx in (0, 3, 6):
+            assert steric_guidance_weight(step_idx, 10, 0.7, 1.0) == 0.0
+        assert steric_guidance_weight(7, 10, 0.7, 1.0) > 0.0
+
+    def test_zero_max_weight_is_off(self):
+        assert steric_guidance_weight(9, 10, 0.7, 0.0) == 0.0
+
+    def test_linear_ramp_over_the_tail(self):
+        # step_idx 8,9 of 10 -> progress 8/9, 9/9 = .889, 1.0
+        w8 = steric_guidance_weight(8, 10, 0.7, 1.0)
+        w9 = steric_guidance_weight(9, 10, 0.7, 1.0)
+        assert 0.0 < w8 < w9 == 1.0
+        assert w8 == pytest.approx((8 / 9 - 0.7) / 0.3, rel=1e-6)
+
+    def test_ramps_on_step_idx_not_t_cur(self):
+        """step_idx counts up while t_cur counts down: a late step_idx must
+        get weight even though the corresponding t_cur is small."""
+        num_steps = 10
+        late_step = 9
+        assert steric_guidance_weight(late_step, num_steps, 0.7, 1.0) > 0.0
+        # The old construction (gate on a small t_cur AND a high frac) is
+        # unsatisfiable — this documents why the index must be step_idx.
+        assert steric_guidance_weight(1, num_steps, 0.7, 1.0) == 0.0
+
+    def test_single_step_sampling_has_a_finite_weight(self):
+        assert steric_guidance_weight(0, 1, 0.7, 1.0) <= 1.0
+
 
 class TestGuidanceStep:
     def test_weight_zero_is_a_noop(self):
@@ -135,6 +179,17 @@ class TestGuidanceStep:
         batch = torch.zeros(8, dtype=torch.long)
         out = steric_guidance(pos, batch, atom_types=z, weight=0.0)
         assert out is pos  # identity, not a copy
+
+    def test_r_clash_forwarded(self):
+        pos = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        batch = torch.zeros(2, dtype=torch.long)
+        z = torch.tensor([1, 1], dtype=torch.long)
+        plain = steric_guidance(pos, batch, atom_types=z, weight=1.0)
+        clashing = steric_guidance(
+            pos, batch, atom_types=z, weight=1.0, r_clash=1.1
+        )
+        assert torch.equal(plain, pos)  # 1.0 A is free for H-H alone
+        assert (clashing - pos).abs().max().item() > 0.0
 
     def test_step_is_capped(self):
         pos = torch.tensor([[0.0, 0.0, 0.0], [0.05, 0.0, 0.0]])
@@ -188,6 +243,39 @@ class TestSamplerIntegration:
             steric_weight=20.0, steric_start_frac=0.0,
         )
         assert not torch.allclose(pos_a, pos_b)
+
+    def test_ramp_late_in_sampling_changes_the_trajectory(self):
+        """With the default 0.7 ramp start the last third of steps must still
+        bite. ``steric_r_clash`` guarantees a nonzero energy regardless of
+        what the random model happened to predict."""
+        m = self._tiny_model()
+        c = CenteredDDPM(num_steps=20, device="cpu")
+        tp = TypeDDPM(num_steps=20, device="cpu")
+        torch.manual_seed(21)
+        pos_a, _ = sample_molecules(
+            m, c, tp, torch.tensor([6]), device="cpu", ddim_steps=6)
+        torch.manual_seed(21)
+        pos_b, _ = sample_molecules(
+            m, c, tp, torch.tensor([6]), device="cpu", ddim_steps=6,
+            steric_weight=20.0, steric_start_frac=0.7, steric_r_clash=6.0,
+        )
+        assert not torch.allclose(pos_a, pos_b)
+
+    def test_ramp_schedule_is_what_gates_the_tail(self):
+        """ramp_start_frac beyond 1.0 disables guidance entirely (weight
+        never exceeds max_weight * 0), so the sample matches the baseline."""
+        m = self._tiny_model()
+        c = CenteredDDPM(num_steps=20, device="cpu")
+        tp = TypeDDPM(num_steps=20, device="cpu")
+        torch.manual_seed(33)
+        pos_a, _ = sample_molecules(
+            m, c, tp, torch.tensor([5]), device="cpu", ddim_steps=5)
+        torch.manual_seed(33)
+        pos_b, _ = sample_molecules(
+            m, c, tp, torch.tensor([5]), device="cpu", ddim_steps=5,
+            steric_weight=20.0, steric_start_frac=1.5, steric_r_clash=6.0,
+        )
+        assert torch.equal(pos_a, pos_b)
 
     def test_weight_zero_is_bit_identical(self):
         m = self._tiny_model()

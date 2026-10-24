@@ -107,6 +107,15 @@ def main() -> None:
     parser.add_argument("--type_temperature", type=float, default=1.0,
                         help="Softmax temperature on type logits (>1 = more "
                              "diverse scaffolds, recommendation.md ScaffDiv #2)")
+    parser.add_argument("--coord_temperature", type=float, default=0.0,
+                        help="Coordinate analogue of --type_temperature (plan "
+                             "Intervention 2): extra Gaussian perturbation per "
+                             "reverse step, scaled by the remaining noise level "
+                             "(0 = off, bit-exact legacy sampler)")
+    parser.add_argument("--keep_largest_fragment", action="store_true",
+                        help="Spatial-clustering fallback (plan Intervention 2): "
+                             "keep only the largest distance-graph component per "
+                             "molecule. Post-hoc correction, not a generation fix")
     parser.add_argument("--steric_weight", type=float, default=0.0,
                         help="Test-time steric (hard-sphere overlap) guidance "
                              "strength w on the clean x0 estimate, applied to the "
@@ -314,6 +323,7 @@ def main() -> None:
             steric_weight=args.steric_weight,
             steric_start_frac=args.steric_start_frac,
             steric_sigma_scale=args.steric_sigma_scale,
+            coord_temperature=args.coord_temperature,
             cond=cond,
             guidance_scale=args.guidance_scale if cond is not None else 0.0,
         )
@@ -331,6 +341,7 @@ def main() -> None:
                 bond_tolerance=args.bond_tolerance,
                 max_bonds_ratio=args.max_bonds_ratio,
                 perceive_orders=args.perceive_bonds,
+                keep_largest_fragment=args.keep_largest_fragment,
             )
             all_mols.append(mol)
             offset += count
@@ -457,6 +468,8 @@ def main() -> None:
             steric_weight=args.steric_weight,
             steric_start_frac=args.steric_start_frac,
             steric_sigma_scale=args.steric_sigma_scale,
+            coord_temperature=args.coord_temperature,
+            keep_largest_fragment=args.keep_largest_fragment,
             # Bond-perception chain protocol (plan workstreams A1–A4) —
             # recorded so any row can be regenerated with the exact lens.
             min_fragment_atoms=args.min_fragment_atoms,

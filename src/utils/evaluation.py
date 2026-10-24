@@ -118,6 +118,7 @@ def coords_and_types_to_mol(
     bond_tolerance: float | None = None,
     max_bonds_ratio: float = 0.0,
     perceive_orders: bool = False,
+    keep_largest_fragment: bool = False,
 ) -> Chem.Mol | None:
     """Build an RDKit Mol from 3D coordinates and atom types.
 
@@ -156,6 +157,11 @@ def coords_and_types_to_mol(
             SMILES-derived metrics (QED, LogP, SNN, scaffolds) get real
             bond orders instead of an all-single skeleton. Only applied
             when ``sanitize=True``.
+        keep_largest_fragment: plan Intervention 2's spatial-clustering
+            fallback — keep only the largest provisional distance-graph
+            component (satellite specks are pruned), regardless of
+            ``min_fragment_atoms``. Off by default; a post-hoc correction,
+            not a generation fix.
 
     Returns:
         An RDKit ``Mol`` or ``None`` if construction/sanitization fails
@@ -170,10 +176,11 @@ def coords_and_types_to_mol(
 
     # Connectivity post-processing: prune small provisional fragments BEFORE
     # bond assignment so disconnected specks never enter the molecule.
-    if min_fragment_atoms > 1:
+    if min_fragment_atoms > 1 or keep_largest_fragment:
         kept = _keep_large_fragments(
             pos, atomic_numbers, valid_atoms, min_fragment_atoms, distance_cutoff,
             bond_tolerance=bond_tolerance,
+            keep_largest=keep_largest_fragment,
         )
         if len(kept) != len(valid_atoms) and bond_logits is not None \
                 and getattr(bond_logits, "ndim", 0) == 3:
@@ -314,6 +321,7 @@ def _keep_large_fragments(
     min_fragment_atoms: int,
     distance_cutoff: float,
     bond_tolerance: float | None = None,
+    keep_largest: bool = False,
 ) -> list[int]:
     """Indices of provisional fragments with ``>= min_fragment_atoms`` atoms.
 
@@ -323,6 +331,13 @@ def _keep_large_fragments(
     components, and keep only fragments of at least ``min_fragment_atoms``
     atoms. Removes isolated atoms (and, at threshold 3, spurious pairs)
     before bond assignment.
+
+    ``keep_largest`` (plan Intervention 2, the "spatial clustering
+    fallback") additionally prunes every component except the largest one, so
+    a molecule with a main body plus satellite specks is reduced to its main
+    body. Off by default: it changes what the molecule IS rather than how it
+    is perceived, so it is a diagnostic/fallback knob, never a headline
+    metric setting.
     """
     n = len(valid_atoms)
     parent = list(range(n))  # union-find over positions in valid_atoms
@@ -353,8 +368,18 @@ def _keep_large_fragments(
     sizes: dict[int, int] = {}
     for a in range(n):
         sizes[find(a)] = sizes.get(find(a), 0) + 1
+    threshold = max(int(min_fragment_atoms), 1)
+    if keep_largest and sizes:
+        # Exactly one component survives: the largest, with ties broken by the
+        # lowest root index so the output is deterministic. ``threshold`` is
+        # still honoured, so a molecule whose every component is below
+        # ``min_fragment_atoms`` prunes to nothing rather than keeping junk.
+        best = max(sizes.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        if sizes[best] < threshold:
+            return []
+        return [valid_atoms[a] for a in range(n) if find(a) == best]
     return [
-        valid_atoms[a] for a in range(n) if sizes[find(a)] >= min_fragment_atoms
+        valid_atoms[a] for a in range(n) if sizes[find(a)] >= threshold
     ]
 
 

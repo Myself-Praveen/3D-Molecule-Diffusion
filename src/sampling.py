@@ -85,6 +85,7 @@ def sample_molecules(
     steric_start_frac: float = 0.7,
     steric_sigma_scale: float = DEFAULT_SIGMA_SCALE,
     steric_max_step: float = 0.5,
+    coord_temperature: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
@@ -134,6 +135,13 @@ def sample_molecules(
             covalent-radii sum (0.75 leaves every real bond untouched; see
             ``src/guidance.py``).
         steric_max_step: per-atom cap (Å) on one guidance displacement.
+        coord_temperature: coordinate-space analogue of ``type_temperature``
+            (plan Intervention 2): after each reverse step, add Gaussian
+            noise scaled by the *remaining* noise level of the step the
+            trajectory just landed on, ``sqrt(1 - ᾱ_new)``. ``0.0`` (default)
+            is a bit-exact no-op. Decoupled from ``eta``: ``eta`` is the
+            DDIM variance term the ancestral update derives from the
+            schedule, while this is an explicit extra perturbation.
 
     Returns:
         ``(pos, z)`` — centered coordinates (N, 3) and long type indices (N,),
@@ -275,6 +283,12 @@ def sample_molecules(
                 pos = pos - dt * v_pred
             else:
                 pos = x0_pred
+            # Coordinate temperature: the OT path's noise level is u itself.
+            if coord_temperature > 0.0:
+                u_new = max(u_cur - dt, 0.0)
+                pos = pos + (
+                    coord_temperature * u_new * torch.randn_like(pos)
+                )
             pos = _center_per_molecule(pos, batch)
             z = _update_types(type_logits, t)
 
@@ -351,8 +365,10 @@ def sample_molecules(
                 mean = coef_x0 * x0_pred + coef_xt * pos
                 var = beta_t * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)
                 pos = mean + var.sqrt() * torch.randn_like(pos)
+                ab_new = alpha_bar_prev
             else:
                 pos = x0_pred
+                ab_new = torch.ones((), device=device)
         else:
             prev_grid = timestep_iter[step_idx + 1] if step_idx + 1 < len(timestep_iter) else -1
             alpha_bar_prev = (
@@ -364,6 +380,16 @@ def sample_molecules(
             direction = (1.0 - alpha_bar_prev - sigma.square()).clamp_min(0).sqrt()
             noise = torch.randn_like(pos) if t_cur > 0 else torch.zeros_like(pos)
             pos = alpha_bar_prev.sqrt() * x0_pred + direction * noise_pred + sigma * noise
+            ab_new = alpha_bar_prev
+
+        # Coordinate temperature (plan Intervention 2): an explicit extra
+        # perturbation scaled by the noise level the trajectory has just
+        # landed on. ``t_cur > 0`` keeps the final clean sample untouched.
+        if coord_temperature > 0.0 and t_cur > 0:
+            pos = pos + (
+                coord_temperature * (1.0 - ab_new).clamp_min(0.0).sqrt()
+                * torch.randn_like(pos)
+            )
 
         pos = _center_per_molecule(pos, batch)
 

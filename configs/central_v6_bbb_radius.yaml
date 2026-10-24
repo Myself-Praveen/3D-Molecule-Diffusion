@@ -1,0 +1,96 @@
+# V6 BBB: V5 (the finished V4-architecture BBBP arm) plus radius-aware
+# coordinate normalization — plan Intervention 3.
+#
+# Why: V5 finished its full 3900-epoch budget and produced a genuine denoiser,
+# but its samples are *fragmented* rather than connected (scripts/
+# diagnose_bbb_clump.py on the 200k-step bbb_full result: 9 fragments/mol,
+# radius of gyration 7.98 A vs 3.43 A for real BBBP, local bonding near
+# reference at 0.81 vs 1.02 bonds/atom). One measurable difference between the
+# datasets remains: QM9 conformers span ~2-4 A while BBBP ones span ~3-7 A, and
+# the schedule applied the same absolute noise to both. `radius_norm:
+# atom_count` makes a unit noise draw the same *relative* corruption for every
+# molecule size: coordinates are divided by R(N) = radius_coeff * N^(1/3)
+# before noising and multiplied back after sampling.
+#
+# radius_coeff 1.06 is measured, not chosen: it is the median of
+# rms_radius / N^(1/3) over the BBBP training set (mean rms 3.59 A at mean
+# N = 40.9, n=600).
+#
+# NOTE: R depends only on the atom count, so the same transform is available at
+# generation time. (The original plan scaled noise by the ground-truth
+# conformer radius, which cannot be computed for a molecule being generated.)
+#
+# Everything else is V5 verbatim, so this arm isolates the coordinate system.
+# Resume is refused across a radius_norm switch (train.py guard): the
+# coordinate scale is baked into the weights.
+#
+#   OMP_NUM_THREADS=8 .venv/bin/python train.py --config configs/central_v6_bbb_radius.yaml
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  cond_dim: 32
+  num_cond_classes: 2
+  use_attention: true
+  # Tier 2 (docs/recommendation.md) — the V4-eps combination
+  self_condition: true          # 2.1 (50% train dropout)
+  coord_refine_layers: 2        # 2.4 (zero-init: identity at init)
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]  # 2.3 (one per layer)
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine              # V4/V5 recipe
+  beta_start: 1.0e-4            # ignored under cosine, kept for compat
+  beta_end: 0.02
+  objective: eps                # DDPM noise prediction
+  # Plan Intervention 3 — the only difference from V5.
+  radius_norm: atom_count
+  radius_coeff: 1.06            # measured on BBBP: median rms_radius/N^(1/3)
+
+training:
+  epochs: 3900                  # ~199k steps at batch 32 (V5 parity)
+  batch_size: 32
+  lr: 2.0e-4
+  warmup_epochs: 20
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 8
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0      # seen in angstroms via the x0_scale path
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 3900
+  ema_decay: 0.9999
+  ema_warmup_steps: 2000
+  min_snr_gamma: 5.0
+  rotation_augment_prob: 0.5
+
+generation:
+  eval_every: 100
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/central_v6_bbb_radius
+  save_every: 200

@@ -1587,4 +1587,10 @@ T.~T. Wager \textit{et al.}, ``Moving beyond rules: the development of a central
 
 \end{thebibliography}
 
+% source-note: the paper source is LaTeX only; this environment has no
+% latexmk/pdflatex, so the paper PDF is not built by this repo. Keep
+% figures and the tex source in sync by regenerating both from the
+% same artifacts (scripts/generate_paper_figures.py and this document).
+
+\todo[Samuel]{where can the right latexmk/pdflatex for this project go? We are building the 2024-11 paper source currently and we want the toolchain for this document to support a latexmk + pdflatex pipeline that handles crossref, labels, and the figures, so that --task=repair === latexmk -pdf -interaction=nonstopmode plus a --task=open landing. This is a paper-source + toolchain question, not a guide/README note.}
 \end{document}

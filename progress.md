@@ -557,7 +557,7 @@ Arms kept (against the plan's acceptance rules): A2 cap 0.25 deploys (calibrator
 |---|---|---|---|---|---|---|---|---|
 | `eval_v5_bbb_steric_w1_n1000` (this session's w=1 ruler) | 1000 | 38.8 | 9.8 | 37.23 | 35.6 | 0.880 | 4.98 | 3.69 |
 
-## 17. Corrected-plan execution: geometry interventions, the pre-RL ruler, and a silent BBB% zeroing bug
+## 17. Corrected-plan execution (final): geometry interventions, the pre-RL ruler, and a silent BBB% zeroing bug
 
 **Scope.** `1ba1d5b` … `4d5032d` implement the corrected plan's Part 1 (sampler/geometry:
 steric guidance `1ba1d5b`, coordinate temperature + largest-fragment fallback `ec61ed9`,

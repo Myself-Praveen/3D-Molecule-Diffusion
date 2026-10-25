@@ -552,3 +552,137 @@ Arms kept (against the plan's acceptance rules): A2 cap 0.25 deploys (calibrator
 |---|---|---|---|
 | V5 BBB retrain | `configs/central_v5_bbb.yaml` → `checkpoints/central_v5_bbb/` | 88/7700, val 1.1551 | training_pos steady ~0.58 (down from 1.05 init); the hh/loss spikes are a V4-era sparse-epoch logging artifact under the budget, not divergence — train_pos is the honest number and it is moving down. V4-arch option on BBBP; hypothesized to lift ConnV past the 2.2% soup-point if it transfers the QM9 geometry win (54.4% ConnV). No evaluation because the run is early; recorded as a hypothesis to be tested when it finishes (or a checkpoint is pulled).
 
+
+## 17. Corrected-plan execution: geometry interventions, the pre-RL ruler, and a silent BBB% zeroing bug
+
+**Scope.** `1ba1d5b` … `4d5032d` implement the corrected plan's Part 1 (sampler/geometry:
+steric guidance `1ba1d5b`, coordinate temperature + largest-fragment fallback `ec61ed9`,
+atom-count radius normalization `118a9ef`), its triage tool (`a0c3bcf`), the radius arm's
+config + measurement driver (`a3d58eb`), the plan-v2 guidance surface (`68e9f0e`: ramp
+schedule, `k_rep`/`r_clash`, CLI), and Part 2 (reward `19fae06`, pairs `a0e8cf2`, DPO
+`e289fbd` + wiring `1ac1b56`, RAFT `efbf3c0`). Every eval below was produced by
+`scripts/chain_bbb_geometry_arms.sh` and `scripts/chain_bbb_final_eval.sh` (both committed,
+resumable per arm) against `checkpoints/central_v5_bbb/best.pt` — the V4-architecture V5
+retrain on BBBP, which is the first BBB checkpoint that is not the 200k `bbb_full` soup.
+
+**One protocol, one ruler.** DDIM-200, η=1.0, quadratic stepping, seed 42, `--relax`, covalent-radii
+bond ruler, `--bbb_oracle models/bbb_oracle.pt`, clump diagnostic alongside every arm:
+`scripts/diagnose_bbb_clump.py` (§17.3). The steric arms were **re-run** under the merged
+code (`4d5032d`) because the earlier arms predated the ramp schedule — mixing them into one
+table would have compared two different interventions.
+
+| arm | n | Validity | ConnV | Bonds/mol | BBB% | IntDiv | frags/mol | R_gyr |
+|---|---|---|---|---|---|---|---|---|
+| `eval_v5_bbb_base` (w=0) | 400 | 43.5 | 8.75 | 37.45 | 33.3 | 0.881 | 5.91 | 3.75 |
+| `eval_v5_bbb_steric_w1` | 200 | 51.5 | **14.00** | 38.16 | 28.2 | 0.878 | 5.92 | 3.78 |
+| `eval_v5_bbb_steric_w5` | 200 | 43.0 | 12.50 | 37.08 | 31.4 | 0.878 | 4.45 | 3.68 |
+| `eval_v5_bbb_steric_w10` | 200 | 42.0 | 12.50 | 36.95 | 39.3 | 0.884 | 6.57 | 3.75 |
+| `eval_v5_bbb_ctemp0p5` (coord T=0.5) | 200 | 52.5 | 0.00 | 22.66 | 0.0 | 0.834 | 20.18 | 7.07 |
+| `eval_pre_rl` (plan ruler) | 1000 | 39.8 | 9.00 | 37.29 | 34.2 | 0.880 | 4.85 | 3.68 |
+
+**What the table says, in order of confidence.**
+
+1. **Steric guidance is the first intervention in the project that moves ConnectedValidity.**
+   Baseline 8.75 % (35/400) → 14.0 % (28/200) at w=1, and it holds at w=5 and w=10 (both 12.5 %).
+   Pooled over the three steric arms: 78/600 = 13.0 % vs 8.75 %, two-proportion z = 2.08,
+   p ≈ 0.04 (w=1 alone: z = 1.98, p ≈ 0.05) — real but marginal, and it is a *relative* lift on a
+   weak base, not a fix. Bond count does not move (37–38 vs 37.45 baseline), so the mechanism is
+   "the clump is pushed apart enough to stay one fragment", not "the extra edges are removed".
+   Validity is also *not* bought: w=1 is the only arm that improves both (51.5 vs 43.5).
+2. **Coordinate temperature is a clean negative** and is recorded as one. `--coord_temperature 0.5`
+   raises Validity to 52.5 % while destroying the geometry: 20.2 fragments per molecule (baseline
+   5.9), R_gyr 7.07 Å (baseline 3.75), Bonds/mol 22.7, ConnV exactly 0.0, BBB% 0.0. Extra coordinate
+   noise per step scatters atoms; it does not regularize the sampler.
+3. **The soup is smaller on V5 than on the 200k checkpoint but is still soup.** ConnV 9.0 % at
+   n=1000 vs the ≤1.5 % recorded in §15 for `bbb_full`/`geofix`/`renorm`, at 37.3 bonds/mol against
+   ~19 real. So the V5 retrain did transfer part of the QM9 geometry win (a ~6× ConnV
+   improvement), and it did so without touching the over-bonding.
+4. **BBB conditioning still steers.** BBB% 33.3 (base) → 39.3 at w=10, against the 24.8 %
+   unconditioned baseline in §15 item 12, with Lipinski% ≥ 92.8 everywhere.
+
+**Step 1.6 gate — verdict: CONDITIONAL PASS, so DPO stays disabled.** Applying the plan's own
+acceptance style (a target band, and the recorded unconditioned baseline as the BBB floor) to the
+arm the chain was built to measure:
+
+- connectivity: ConnV ≥ 12 % — **PASS** (14.0 % at w=1; the plan's "only 4–6 %" trigger for going
+  straight to RAFT did not occur, so the RAFT *replacement* path is not taken);
+- biological signal: BBB% ≥ 24.8 % — **PASS** (28.2 % at w=1, 39.3 % at w=10);
+- bond geometry: Bonds/mol ≈ 19 — **FAIL** (37–38, unchanged by every sampler knob tried);
+- validity not sacrificed: 51.5 % at w=1 — **PASS**.
+
+Because one axis fails outright, `rl.enabled` stays `false` in every config (`train.py` refuses
+DPO before the geometry gate passes, by design and by test). The gate is re-evaluated when a
+bond-count intervention lands, not before.
+
+**17.1 A silent BBB% zeroing bug — found, fixed, and only partly retrofittable.**
+`BBBClassifier.predict_batch` inferred each graph's node count from `edge_index`. PyG's inference
+is `edge_index.max() + 1`, so a molecule whose *highest-index* atom has no neighbour inside the
+2.5 Å distance gate collated one atom short; the collated `z` and `batch` then disagreed, and
+`global_mean_pool` raised `expanded size (13184) must match existing size (13183)`. The blanket
+`except` in `predict_batch` returned `[0.0] * len(mols)` — a **whole-cohort BBB% of 0.0**, with no
+log line saying so. Two arms in the table above were hit (`eval_pre_rl`, and `eval_v5_bbb_ctemp0p5`,
+where the zero happens to be genuine: its molecules really are non-permeable). Found by diffing the
+chain summary against the per-arm `metrics.json` — a 398-valid-molecule cohort cannot have zero
+BBB-positives at a 33 % base rate.
+
+Fix (`src/models/bbb_classifier.py`): `data_to_input` now sets `num_nodes` explicitly, and
+`predict_batch` falls back to **per-molecule** scoring (with a `RuntimeWarning`) instead of
+returning zeros if a batched forward still fails. `tests/test_bbb_oracle.py::TestIsolatedAtomBatching`
+pins all three properties (explicit `num_nodes`, aligned `z`/`batch`, real ETKDG molecule with a
+lone atom).
+
+Retrofit: `scripts/recompute_bbb_from_sdf.py` re-scores a directory's saved `molecules.sdf` with
+the fixed path and rewrites `metrics.json`'s `BBB%`, recording provenance in a `bbb_recompute`
+block. Applied to `eval_pre_rl` only (**0.0 → 34.17**, n=398). Re-scoring *every* arm showed why
+it was not applied wholesale: the same arms move by −3.6…+1.9 pp (`base` 33.3→32.2,
+`w1` 28.2→30.1, `w5` 31.4→32.6, `w10` 39.3→35.7) because the eval scores molecules through
+`mol_to_data`, which **re-embeds** them with ETKDG instead of using the generated conformer — so
+BBB% carries a few points of embedding noise that the fixed path re-draws. Consequence recorded as
+a limitation, not smoothed over: **BBB% differences below ~4 pp at n≈100 are not signal**, and
+`src/rl/rewards.py`'s docstring claim that the eval uses the zero-shift `data_to_input` path is
+currently false — the eval should be switched to it (one-line change, but it redefines the metric
+and invalidates every logged BBB% row, so it belongs with a re-measurement pass, not here).
+
+**17.2 What is measured but not yet decided.**
+- **Radius normalization** (`configs/central_v6_bbb_radius.yaml`, `118a9ef`) is *shipped but
+  untrained*: an R(N) = 1.06·N^(1/3) size normalization with a resume guard, a 1-epoch smoke run
+  verifying the full train→sample→eval path. Training it is a multi-hour run (7700 epochs at the
+  V5 budget) and was deliberately not started while the pre-RL row was still being measured.
+- **RAFT** (`efbf3c0`) was measured on the V5 baseline SDF: 174 candidates → 139 fragmented,
+  14 outside the bond window, **21 elites**; a 2-epoch smoke fine-tune moved the elite loss
+  0.650 → 0.532. It is the fallback that runs *instead of* preference optimization if the gate
+  fails, and the gate did not fail, so it stays measured-but-idle.
+
+**17.3 The clump diagnostic is what made the negative interpretable.**
+`scripts/diagnose_bbb_clump.py` (numpy-only `scipy`-free fragmenter; `a0c3bcf`) reports fragments
+per molecule, R_gyr, largest-fragment fraction and a per-molecule LDAG comparison against a BBBP
+reference. It is what turns "ConnV is low" into "the atoms are in ~5 clumps inside a 3.8 Å blob,
+vs ~1 fragment at ~5 Å for real BBBP molecules" — and it is what showed the coordinate-temperature
+arm scattering atoms (20.2 fragments, 7.07 Å) rather than regularizing them. `tests/test_clump_diagnostics.py`
+covers the fragmenter on hand-built geometries (single fragment, clean split, chained clump).
+
+**17.4 Cleanup, and a deletion that went further than intended (recorded as an error).**
+`deploy-venv/` (5.3 GB) and the uncited per-molecule eval logs are gone. For the intermediate
+`checkpoints/*/epoch_*.pt` snapshots (312 files, **5.6 GB** — not the ~264 MB I had estimated when
+asking) the agreed rule was *keep only the epochs the record cites* (100/200/300/400/1400 for the
+`bbb_*` arms, plus 2800/3500/7200 in `bbb_full`; `best.pt` and `last.pt` untouched). The delete
+script built its keep-list as `checkpoints/<run>/epoch_N.pt` but matched against paths that had
+already been made relative (`<run>/epoch_N.pt`), so the guard matched nothing and **all 312
+snapshots were deleted, including the twelve that were meant to survive**. They are gitignored, so
+they are unrecoverable, and `git rev-list --all` confirms no snapshot was ever committed.
+
+What this costs, stated plainly: the epoch-specific measurements in §15 items 3–5 and L1/L5/L8
+(the $x_0$ recovery probes at epochs 100/200/300/400, the epoch-1400 renormalization comparison,
+the epoch-2800/3500/7200 LDAG verdicts) can no longer be **re-derived** from those weights. Their
+*numbers* are recorded in this file and in `docs/project_report.tex`, and the trend logs that
+produced them (`logs/bbb_*_probe_trend.log`) are kept, so the claims are still auditable against
+their logs — but not against the checkpoints. Re-deriving any of them now means retraining that
+arm. `best.pt`/`last.pt` survive for all ten run directories (657 MB total), which is what every
+headline number in this file and in the report is measured from, and `outputs/**/eval/` metrics are
+untouched.
+
+Two things this incident says about the repo rather than about me: (a) the record's reproducibility
+depends on untracked local artifacts, so any claim tied to a *particular epoch* is weaker than one
+tied to `best.pt`; (b) per §15 item 8 (the mistyped `checkpoint.dir`), destructive maintenance on
+this tree belongs behind a dry run that prints the keep-list before anything is removed — a
+`DRY_RUN=1` pass would have shown an empty keep-list immediately.

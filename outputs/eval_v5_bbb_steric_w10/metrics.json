@@ -1,0 +1,41 @@
+{
+  "metrics": {
+    "Validity": 42.0,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8841858860900031,
+    "QED": 0.5861202022994424,
+    "LogP": 1.9441088095238097,
+    "SNN": 0.09034039993720308,
+    "BBB%": 39.285714285714285,
+    "ScaffDiv": 0.8928571428571429,
+    "ScaffCov": 0.16666666666666666,
+    "Lipinski%": 92.85714285714286,
+    "Veber%": 64.28571428571429,
+    "CNS_MPO": 3.1024169217687074,
+    "ConnectedValidity": 12.5,
+    "BondsPerMol": 36.95238095238095,
+    "ConnectedFrac": 29.761904761904763
+  },
+  "latex_row": "42.0000  & 100.0000  & 100.0000  & 0.8842  & 0.5861  & 1.9441  & 0.0903  & 39.2857  & 0.8929  & 0.1667  & 92.8571  & 64.2857  & 3.1024  & 12.5000  & 36.9524  & 29.7619 \\\\",
+  "num_valid": 84,
+  "num_total": 200,
+  "run": {
+    "checkpoint": "checkpoints/central_v5_bbb/best.pt",
+    "num_samples": 200,
+    "ddim_steps": 200,
+    "eta": 1.0,
+    "seed": 42,
+    "step_schedule": "quadratic",
+    "relax": false,
+    "steric_weight": 10.0,
+    "steric_start_frac": 0.7,
+    "steric_sigma_scale": 0.75,
+    "coord_temperature": 0.0,
+    "keep_largest_fragment": false,
+    "min_fragment_atoms": 1,
+    "bond_tolerance": null,
+    "max_bonds_ratio": 0.0,
+    "perceive_bonds": false
+  }
+}

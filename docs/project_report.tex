@@ -823,6 +823,284 @@ relaxation mask the raw verdict --- matching L3's conclusion that
 post-hoc relaxation cannot rescue connectivity.
 
 % ═══════════════════════════════════════════════════════════════
+\section{Corrected Geometry Plan: Interventions and Diagnostics}
+\label{sec:geometry_plan}
+% ═══════════════════════════════════════════════════════════════
+
+Sections above establish the BBB geometry failure empirically. This section
+records the corrected intervention suite built against it, the two errors in the
+working diagnosis that the intervention work exposed, and the measurement
+protocol used to judge each arm. All code described here ships default-off: no
+existing recipe, checkpoint or reported number changes unless a flag is passed.
+
+\subsection{Two Errors in the Working Diagnosis}
+
+\textbf{1. A bond-count unit mismatch.} Throughout the earlier analysis, the
+BBB arm was described as producing "32 bonds per molecule against ${\sim}19$
+for real BBBP". Those two numbers were measured in different units: the
+evaluation ruler counts \emph{every} bond, including C--H, while 19 is a
+heavy-atom figure. Measured with the identical ruler on both sides
+(\texttt{scripts/diagnose\_bbb\_clump.py}, 200 real training molecules as the
+reference): real BBBP sits at \textbf{26.88 bonds per molecule} and
+\textbf{0.999 bonds per atom}, where the generated arms produce 0.81
+(bbb\_full) and 0.93 (V5) bonds per atom. The generated molecules are
+therefore not twice over-bonded --- their local bonding is close to the
+reference and slightly \emph{below} it. This matters directly for RL: a reward
+that penalises $|\text{bonds} - 19|$ on H-inclusive molecules would push the
+model away from correct geometry, so \texttt{REFERENCE\_BONDS\_PER\_MOL}
+(26.88) is the number exposed in \texttt{src/rl/rewards.py}.
+
+\textbf{2. The failure is fragmentation, not fusion.} The same diagnostic
+separates the two physically distinct ways a molecule can be "soup":
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+ & bonds/atom & fragments/mol & largest-frag. frac & $R_{gy}$ (\AA{}) & single-frag \% \\
+\midrule
+real BBBP (ref.)   & 0.999 & 1.04 & 0.997 & 3.09--3.43 & 97--98 \\
+bbb\_full best     & 0.813 & 8.98 & 0.296 & 7.98       & 2.5  \\
+V5 baseline        & 0.928 & 5.91 & 0.740 & 3.75       & 20.1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A fused clump would show \emph{few} fragments, a small radius of gyration and
+an elevated bond density. None of that holds: the generated molecules are
+dense local clusters scattered through space --- eight or nine of them per
+molecule for the full-budget arm --- at a radius of gyration more than twice
+the reference. The model reproduces bond-length-scale geometry locally and
+fails to assemble one connected object. This reframes the target of the
+interventions: what has to change is how fragments are stitched and how far
+apart they are placed, not how hard atoms are pushed apart.
+
+\subsection{Test-Time Steric Guidance (Intervention 1)}
+
+Nothing in the objective or the sampler constrains non-bonded proximity, so the
+plan's first intervention adds one at test time with no retraining. The energy
+is a per-element-pair hard sphere evaluated on the \emph{clean} estimate
+$\hat{x}_0$:
+
+\begin{equation}
+    E(\hat{x}_0) = \tfrac{1}{2} k \sum_{i \ne j}
+        \big[\max\big(0,\ \sigma_{ij} - d_{ij}\big)\big]^2,
+    \qquad \sigma_{ij} = s\,(r_i^{\mathrm{cov}} + r_j^{\mathrm{cov}}),
+\end{equation}
+
+with $s = 0.75$ by default, and the guided step
+$\hat{x}_0 \leftarrow \hat{x}_0 - w\,\nabla_{\hat{x}_0} E$ followed by the
+normal reverse update. Three corrections over the plan as first written:
+
+\begin{itemize}
+    \item \textbf{Real bonds must feel zero force.} The proposed clash window
+          $1.2 < d < 1.8$~\AA{} contains every real covalent bond (C--C 1.54,
+          C--N 1.47, C--O 1.43, C=C 1.34, C=O 1.22~\AA{}), so it repels
+          correct chemistry while applying no force to a true overlap at
+          0.5--0.9~\AA{}. The element-pair form gives $\sigma_{\mathrm{CC}} =
+          1.14$~\AA{} $<$ every real C--C bond and $\sigma_{\mathrm{CH}} =
+          0.81$~\AA{} $<$ every real C--H bond. The plan's flat
+          $r_{clash} = 1.1$~\AA{} threshold is available as an \emph{additive}
+          term (\texttt{--steric\_r\_clash}) but cannot be the only term: it
+          lands inside real C--H bonds at 1.06--1.10~\AA{}.
+    \item \textbf{Guidance acts on $\hat{x}_0$, not $x_t$.} At $t > 0$ the
+          coordinates still carry diffusion noise, so penalising clashes there
+          punishes the noise draw itself (DPS/Tweedie guidance). No extra model
+          forward pass is needed --- the energy is a pure function of the
+          coordinates --- so the plan's redundant \texttt{model(...)} call
+          inside the autograd block is dropped.
+    \item \textbf{The schedule must index the sampling progress.} Reverse
+          diffusion counts $t$ down while the loop counter counts up; gating on
+          both a small $t$ and a late progress fraction is unsatisfiable. The
+          weight is a linear ramp \texttt{steric\_guidance\_weight(step\_idx,
+          N, ramp\_start, max\_weight)} that starts at 70\% of sampling and
+          peaks at the final step --- a ramp also avoids injecting a step
+          discontinuity exactly where bond lengths are settled.
+\end{itemize}
+
+Everything is off by default: \texttt{--steric\_weight 0} is a bit-exact
+reproduction of the legacy sampler (regression-tested), with
+\texttt{--steric\_enabled}, \texttt{--steric\_max\_weight},
+\texttt{--steric\_k\_rep}, \texttt{--steric\_ramp\_start} and
+\texttt{--steric\_sigma\_scale} as the plan's test-matrix knobs.
+
+\subsection{Coordinate Temperature and the Fragment Fallback (Intervention 2)}
+
+\texttt{--coord\_temperature} adds a per-step Gaussian perturbation scaled by
+the noise level the trajectory just landed on (the coordinate analogue of the
+existing type temperature), and \texttt{--keep\_largest\_fragment} implements
+the plan's post-hoc spatial-clustering fallback by keeping only the largest
+distance-graph component. Both are default-off and both are labelled honestly
+in the tooling: the fragment filter relabels a molecule's extent rather than
+fixing generation, so it is a diagnostic knob, never a headline setting.
+
+\subsection{Radius-Aware Coordinate Normalization (Intervention 3)}
+
+The same absolute noise scale was applied to a 9-atom QM9 molecule and a
+40-atom BBBP one. \texttt{CenteredDDPM} now optionally runs the entire
+forward and reverse process in size-normalized coordinates,
+
+\begin{equation}
+    x_0 \mapsto x_0 / R(N), \qquad R(N) = c\, N^{1/3},
+\end{equation}
+
+with $c = 1.06$~\AA{} --- the measured median of
+$R_{rms} / N^{1/3}$ over the BBBP training set (mean $R_{rms}$ 3.59~\AA{} at
+mean $N = 40.9$, $n = 600$), not a tuned constant. Depending only on the atom
+count is what makes the transform runnable at generation time; the plan's
+version scaled noise by the \emph{ground-truth conformer radius}, a quantity
+that does not exist for a molecule being generated. The arm ships as
+\texttt{configs/central\_v6\_bbb\_radius.yaml} (V5 verbatim plus the two
+diffusion keys), carries a resume guard because the coordinate scale is baked
+into the weights, and denormalizes $\hat{x}_0$ before the \AA{}-thresholded
+valence and geometry penalties so their cutoffs stay in the right units. A
+1-epoch smoke run into a temporary checkpoint directory verified the full
+path: trains, samples, records the setting, and the generator announces the
+normalization it sampled under.
+
+\subsection{RAFT Fallback (Step 1.5)}
+
+If test-time guidance lands only in the 4--6\% band, the plan directs a
+rejection-sampling pass \emph{before} any preference optimization --- learning
+from atom soup teaches the model to reward atom soup.
+\texttt{scripts/raft\_finetune.py} filters candidates on validity,
+connectivity and a bond window around the measured reference (the plan's
+15--25 around 19 rescaled to this ruler), reports how many candidates failed
+each criterion, refuses to run below \texttt{--min\_elites}, and then performs
+a plain supervised MSE pass on the survivors, writing a checkpoint in
+\texttt{train.py}'s format. Measured on the V5 baseline SDF: 174 candidates
+$\rightarrow$ 139 fragmented, 14 outside the bond window, \textbf{21 elites},
+with a two-epoch smoke fine-tune taking the elite loss from 0.650 to 0.532.
+
+\subsection{Measurement Protocol}
+
+Every arm in this section is measured under one protocol so the rows are
+comparable: 1000 (or 200--400 for sweeps) samples, DDIM-200, $\eta = 1.0$,
+quadratic step schedule, seed 42, \texttt{--relax}, the covalent-radii bond
+ruler, and the clump diagnostic run alongside each output. The chains that
+produce them are committed (\texttt{scripts/chain\_bbb\_geometry\_arms.sh},
+\texttt{scripts/chain\_bbb\_final\_eval.sh}) and are resumable per arm.
+
+\subsection{Measured Results and the Gate}
+
+All rows are V5 \texttt{best.pt}. The steric rows were re-measured under the
+merged ramp schedule, so the table compares one intervention and not two
+implementations of it.
+
+\begin{center}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+\textbf{arm} & $n$ & \textbf{Valid.} & \textbf{ConnV} & \textbf{Bonds} & \textbf{BBB\%} & \textbf{IntDiv} & \textbf{frags} & $R_{gy}$ \\
+\midrule
+baseline ($w{=}0$)          & 400  & 43.5 & 8.75  & 37.45 & 33.3 & 0.881 & 5.91 & 3.75 \\
+steric $w{=}1$              & 200  & 51.5 & \textbf{14.00} & 38.16 & 28.2 & 0.878 & 5.92 & 3.78 \\
+steric $w{=}5$              & 200  & 43.0 & 12.50 & 37.08 & 31.4 & 0.878 & 4.45 & 3.68 \\
+steric $w{=}10$             & 200  & 42.0 & 12.50 & 36.95 & 39.3 & 0.884 & 6.57 & 3.75 \\
+coord.\ temp.\ $0.5$        & 200  & 52.5 & 0.00  & 22.66 & 0.0  & 0.834 & 20.18 & 7.07 \\
+pre-RL ruler                & 1000 & 39.8 & 9.00  & 37.29 & 34.2 & 0.880 & 4.85 & 3.68 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Steric guidance is the first intervention in this project to move
+connectivity.} Connected validity rises from 8.75\% (35/400) to 14.0\%
+(28/200) at $w{=}1$ and holds at $w{=}5$ and $w{=}10$ (12.5\% each). Pooled
+over the three weights: 78/600 $=$ 13.0\% against 8.75\%,
+two-proportion $z = 2.08$, $p \approx 0.04$ ($w{=}1$ alone $p \approx 0.05$)
+--- a real but marginal lift on a weak base, not a fix. The bond count does
+not move (36.9--38.2 against 37.45), so the mechanism is that the clump is
+pushed apart enough to remain one component, not that superfluous edges are
+removed. $w{=}1$ is also the only arm that improves validity and connectivity
+together.
+
+\textbf{Coordinate temperature is a clean negative.} $T = 0.5$ lifts validity
+to 52.5\% while destroying the geometry: 20.2 fragments per molecule against
+5.91, $R_{gy}$ 7.07~\AA{} against 3.75, connected validity exactly zero.
+Additional per-step coordinate noise scatters atoms; it does not regularize
+the sampler.
+
+\textbf{The gate.} With connectivity $\geq 12\%$ and the recorded
+unconditioned BBB rate (24.8\%) as the acceptance axes, $w{=}1$ passes both,
+holds validity at 51.5\%, and fails only the bond-circumference axis
+(${\sim}37$ bonds against 26.88 for real BBBP on the same H-inclusive ruler).
+Verdict: \textbf{conditional pass}, one axis failed outright, so preference
+optimization remains disabled in every shipped config. The plan's
+``only 4--6\% connectivity, go straight to RAFT'' trigger did not occur, so
+the RAFT path stays available but unused.
+
+\subsection{A Silent BBB\% Zeroing Bug}
+
+The oracle's batched scorer inferred each graph's node count from
+\texttt{edge\_index}, for which PyG takes \texttt{max() + 1}. A molecule whose
+highest-index atom has no neighbour inside the 2.5~\AA{} distance gate
+therefore collated one atom short, the collated atom-type and batch vectors
+disagreed, and the pooling layer raised. A blanket \texttt{except} returned
+zeros for the entire call, so one such molecule anywhere in a cohort reported
+\textbf{BBB\% $=$ 0.0} for all of it, with no log line. It was caught by
+comparing a chain summary against per-arm \texttt{metrics.json}: a 398-valid
+cohort cannot have zero BBB-positives at a 33\% base rate.
+
+The fix sets \texttt{num\_nodes} explicitly and, if a batched forward still
+fails, falls back to per-molecule scoring with a warning instead of returning
+zeros; three regression tests pin the properties. Only the pre-RL row was
+re-scored from its saved SDF (0.0 $\rightarrow$ 34.2\%, provenance recorded in
+the directory's \texttt{metrics.json}), because re-scoring every arm moves
+correct rows by $-3.6$ to $+1.9$ points: the evaluator re-embeds each molecule
+with ETKDG instead of scoring the conformer the model produced, so BBB\%
+carries that embedding's noise. \textbf{BBB\% differences below ${\sim}4$
+points at $n \approx 100$ are not signal}, and switching the evaluator to the
+zero-shift generated-conformer path --- which the reward module's documentation
+already assumes --- is a re-measurement task, not a patch.
+
+\section{Preference Fine-Tuning (Phase 2): Design and Guard}
+\label{sec:rl}
+% ═══════════════════════════════════════════════════════════════
+
+Phase 2 refines BBB steering on top of a geometry that has already been fixed;
+RL does not fix geometry, and the project's standing rule is that no preference
+optimization runs before the Phase 1 gate passes. The stack ships therefore
+with \texttt{rl.enabled: false} in every config.
+
+\textbf{Reward (}\texttt{src/rl/rewards.py}\textbf{).} A composite of BBB
+probability, validity, QED, connectivity, bond-count distance, severe clashes
+and fragment count using the plan's weights. Invalid molecules return exactly
+$-1.0$ rather than being dropped: they are the \emph{rejected} side of a
+preference pair, and the failure mode the model must stop producing is exactly
+an invalid clump. The oracle is loaded as a plain \texttt{nn.Module}
+(manual \texttt{torch.load} + \texttt{load\_state\_dict}; no
+Lightning-style \texttt{load\_from\_checkpoint} or \texttt{predict\_proba})
+and scored through the evaluation's own zero-shift geometry path.
+
+\textbf{Pairing (}\texttt{src/rl/preference\_pairs.py}\textbf{).} Two
+constructors: \emph{seed-matched} pairs rollouts drawn from the same initial
+noise under two guidance scales ($w = 4.0$ vs $w = 0.0$), so the only
+difference inside a pair is what guidance did; \emph{valid-vs-invalid} zips the
+best valid molecules against invalid clumps. Samples keep their generated
+$(\mathbf{r}, z)$ even when molecule construction failed, so rejected examples
+remain encodable for the diffusion loss.
+
+\textbf{DPO (}\texttt{src/rl/dpo.py}\textbf{).} Three corrections are pinned
+by tests: the implicit reward is
+$\mathrm{MSE}_{ref} - \mathrm{MSE}_{model}$ (higher when the fine-tuned model
+denoises better) and the loss is $-\log\sigma\big(\beta(r_{chosen} -
+r_{rejected})\big)$, i.e. the model maximises its advantage over a frozen
+reference --- the opposite of the sign that would train it on the losers; each
+side is noised with \texttt{add\_noise} at its own random timestep before the
+forward pass, because the denoiser only ever sees $x_t$; and the reference runs
+under \texttt{no\_grad} with parameters frozen. The flow objective is refused
+explicitly rather than silently mis-scored.
+
+\textbf{Wiring (}\texttt{train.py}\textbf{)} adds an opt-in \texttt{rl}
+block: \texttt{init\_checkpoint} (or \texttt{--resume}) sets the fine-tuning
+start, \texttt{pair\_file} feeds pairs from \texttt{scripts/build\_rl\_pairs.py},
+\texttt{dpo\_ref\_checkpoint} anchors the reference, and \texttt{dpo\_lr} /
+\texttt{dpo\_epochs} take over the stage's optimizer and budget. The stage
+joined the resume guard, since it changes what the weights are optimised
+against. End-to-end smoke on the V5 checkpoint: a pair file generated from six
+seed-matched rollouts (three pairs accepted, rejected side 100\% invalid
+clumps), a one-epoch stage starting from the pre-RL weights with a frozen
+reference, logging \texttt{dpo=0.6870} and exiting cleanly.
+
+% ═══════════════════════════════════════════════════════════════
 \section{Limitations}
 \label{sec:limitations}
 % ═══════════════════════════════════════════════════════════════
@@ -833,9 +1111,13 @@ conjecture, and together they bound what the reported results support.
 \subsection{L1: BBB-Targeted Generation Does Not Yet Produce Molecules}
 
 \textbf{The headline BBB claim is not met.} Every centralized, federated,
-ablated and guidance-swept BBB arm produces unconnected atom soup, with
+ablated and guidance-swept arm run against the full-budget
+(\texttt{bbb\_full}, 200k-step) checkpoint produces unconnected atom soup, with
 \texttt{ConnectedValidity} (valid \emph{and} a single connected fragment)
-equal to \textbf{0.0} in every configuration we ran:
+equal to \textbf{0.0} in every one of those configurations. The later V5
+retrain does not reproduce that exact zero --- it reaches 8.75--14.0\%
+(\S\ref{sec:geometry_plan}) --- but the same failure survives it, as the
+update at the end of this subsection records:
 
 \begin{itemize}
     \item \textbf{Guidance is flat}: $w = 0 \to 8$ moves validity only
@@ -916,6 +1198,21 @@ still does not convert into connected molecules under this objective. That
 negative result is the honest headline for the BBB arm, and it is why the
 $\lambda_2$ demand-side defect (L5) is now run as its own controlled ablation
 rather than being folded into the budget comparison.
+
+\textbf{Update after the V5 retrain (\S\ref{sec:geometry_plan}).} The V4
+architecture retrained on BBBP (\texttt{central\_v5\_bbb}) changes the
+magnitude of this limitation without removing it. Under the identical ruler it
+scores \textbf{ConnV 8.75\%} at $n{=}400$ and \textbf{9.0\%} at the plan's
+1000-sample protocol, against 1.0--1.5\% for the 200k arm --- a roughly sixfold
+improvement, and the first nonzero connectivity this project has measured at
+scale. What does \emph{not} change: the samples are still ${\sim}5$ fragments
+per molecule inside a 3.7~\AA{} blob (real BBBP: 1.04 fragments at
+3.09--3.43~\AA{}), bonds per molecule remain 37.3 against 26.88 for real
+compounds on the same H-inclusive ruler, and validity is 39.8\%. The
+interventions of \S\ref{sec:geometry_plan} move ConnV to 14.0\% and leave the
+bond axis untouched. L1's substance therefore stands --- the generator is not
+yet usable --- while its "ConnV is zero everywhere" formulation has been
+superseded by measurement and is corrected here rather than left to age.
 
 \subsection{L2: The Federated IID Partitioner Was Broken for Label-Skewed Data}
 

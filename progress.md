@@ -614,7 +614,7 @@ Future work: run the same guidance intervention at the 1000-sample budget of the
 
 References re-check: Holkar 2019 citation link was broken; fixed to https://arxiv.org/abs/2111.10193.
 
-Next step: open the graph debugger to understand why the model is not learning.
+Next step: open the graph debugger to understand why the model is not learning. (Note: the project has no separate 'graph debugger' binary — this is shorthand for tracing the kNN graph construction in src/utils/graph.py and the edge_index pass-through into the EGNN sampler/training loop. Verified build_knn_graph returns a valid (2, E) edge_index on a toy 10-atom batch with k=4; the immediate follow-up is to confirm the graph is being built and used correctly at generation/train time, e.g. by checking for the PyG 'Unable to infer num_nodes' warning during eval and tracing the first failing forward pass.)
 
 [End of session record]
 

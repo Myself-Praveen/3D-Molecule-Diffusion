@@ -7,8 +7,14 @@ import torch
 from src.guidance import (
     DEFAULT_K_REP,
     DEFAULT_SIGMA_SCALE,
+    DEFAULT_VALENCE_COVALENT_FACTOR,
+    DEFAULT_VALENCE_K_VAL,
+    DEFAULT_VALENCE_MAX_STEP,
+    DEFAULT_VALENCE_TAU,
     steric_guidance,
     steric_guidance_weight,
+    valence_guidance,
+    valence_guidance_weight,
 )
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.flow import flow_time_embedding, flow_x0_pred
@@ -75,8 +81,14 @@ def sample_molecules(
     steric_k_rep: float = DEFAULT_K_REP,
     steric_r_clash: float | None = None,
     steric_max_step: float = 0.5,
-    coord_temperature: float = 0.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    valence_weight: float = 0.0,
+    valence_start_frac: float = 0.7,
+    valence_tau: float = DEFAULT_VALENCE_TAU,
+    valence_covalent_factor: float = DEFAULT_VALENCE_COVALENT_FACTOR,
+    valence_k_val: float = DEFAULT_VALENCE_K_VAL,        valence_max_step: float = DEFAULT_VALENCE_MAX_STEP,
+        valence_enabled: bool = False,
+        coord_temperature: float = 0.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 
     Args:
@@ -188,24 +200,45 @@ def sample_molecules(
     if obj not in ("eps", "flow"):
         raise ValueError(f"Unknown objective={obj!r} (expected 'eps' or 'flow')")
 
-    def _guide(x0_pred: torch.Tensor, step_idx: int, num_steps: int) -> torch.Tensor:
-        """Steric guidance on the clean estimate (no-op when ``w <= 0``).
+    def _guide(
+        x0_pred: torch.Tensor,
+        step_idx: int,
+        num_steps: int,
+        atom_types: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Steric + valence guidance on the clean estimate (no-op when both w <= 0).
 
-        The weight comes from ``steric_guidance_weight``: a linear ramp over
-        the last ``1 - steric_start_frac`` of the *sampling* steps.
+        Part A is hard-sphere steric guidance; Part B is continuous hypervalency
+        guidance. Both ramp over the last fraction of the sampling steps so they
+        only act when bond geometry is being settled.
         """
-        w = steric_guidance_weight(
+        types_to_use = atom_types if atom_types is not None else z
+
+        w_s = steric_guidance_weight(
             step_idx, num_steps,
             ramp_start_frac=steric_start_frac, max_weight=steric_weight,
         )
-        if w <= 0.0:
-            return x0_pred
-        return steric_guidance(
-            x0_pred, batch, atom_types=z, weight=w,
-            sigma_scale=steric_sigma_scale, k_rep=steric_k_rep,
-            r_clash=steric_r_clash,
-            max_step=steric_max_step, clamp=x0_clamp,
+        if w_s > 0.0:
+            x0_pred = steric_guidance(
+                x0_pred, batch, atom_types=types_to_use, weight=w_s,
+                sigma_scale=steric_sigma_scale, k_rep=steric_k_rep,
+                r_clash=steric_r_clash,
+                max_step=steric_max_step, clamp=x0_clamp,
+            )
+
+        w_v = valence_guidance_weight(
+            step_idx, num_steps,
+            ramp_start_frac=valence_start_frac, max_weight=valence_weight,
         )
+        if w_v > 0.0:
+            x0_pred = valence_guidance(
+                x0_pred, batch, atom_types=types_to_use, weight=w_v,
+                tau=valence_tau, covalent_factor=valence_covalent_factor,
+                k_val=valence_k_val, max_step=valence_max_step,
+                clamp=x0_clamp,
+            )
+
+        return x0_pred
 
     def _update_types(type_logits: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """One categorical posterior step q(z_{t-1} | z_t, p0) for all atoms."""
@@ -276,7 +309,7 @@ def sample_molecules(
                 v_pred = torch.zeros_like(v_pred)
 
             x0_pred = flow_x0_pred(v_pred, pos, u_cur, batch=batch, clamp=x0_clamp)
-            guided = _guide(x0_pred, i, num_ode_steps)
+            guided = _guide(x0_pred, i, num_ode_steps, atom_types=z)
             if guided is not x0_pred:
                 # On the OT path x_u ≈ x0 at low u, so the clean-space
                 # correction is applied to the current point as well; the
@@ -356,7 +389,7 @@ def sample_molecules(
         # draw. The guided x0 is what the reverse step below consumes, so the
         # DPS correction reaches the trajectory through the x0 term (and, at
         # the low-noise steps this guidance is gated to, sqrt(ᾱ_prev) ≈ 1).
-        x0_pred = _guide(x0_pred, step_idx, len(timestep_iter))
+        x0_pred = _guide(x0_pred, step_idx, len(timestep_iter), atom_types=z)
         # Tier 2.1: the refined x0 becomes the next step's self-conditioning
         # input (Analog Bits iteration refinement).
         if self_cond:

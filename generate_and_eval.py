@@ -180,6 +180,27 @@ def main() -> None:
                              "retrosynthesis) on the RAW samples: merges gate "
                              "metrics into the metric table / metrics.json and "
                              "stores the PASS-FAIL verdict as lab_gate")
+    parser.add_argument("--valence_enabled", action="store_true",
+                        help="Turn on test-time physical valence guidance at "
+                             "--valence_weight (contract bbb-valence-dpo-v2.1)")
+    parser.add_argument("--valence_weight", type=float, default=0.0,
+                        help="Peak valence guidance weight w on the clean x0 "
+                             "estimate (0 = off; overridden to 0.5 when "
+                             "--valence_enabled and --valence_weight <= 0)")
+    parser.add_argument("--valence_start_frac", type=float, default=0.7,
+                        help="Fraction of the reverse trajectory elapsed when "
+                             "the valence ramp starts (0.7 = last 30%)")
+    parser.add_argument("--valence_tau", type=float, default=0.05,
+                        help="Sigmoid sharpness for soft bond perception in Å "
+                             "(default 0.05; contract: 0.05)")
+    parser.add_argument("--valence_covalent_factor", type=float, default=1.10,
+                        help="Multiplier on the covalent-radius sum for the "
+                             "soft bond envelope (default 1.10; contract: 1.10)")
+    parser.add_argument("--valence_k_val", type=float, default=1.0,
+                        help="Valence penalty force constant (default 1.0)")
+    parser.add_argument("--valence_max_step", type=float, default=0.15,
+                        help="Max per-atom displacement per guided step in Å "
+                             "(default 0.15)")
     args = parser.parse_args()
 
     # Plan Step 1.2 test matrix: --steric_enabled is the convenience switch
@@ -188,6 +209,10 @@ def main() -> None:
     args.steric_weight = max(float(args.steric_weight), 0.0)
     if args.steric_weight <= 0.0 and args.steric_enabled:
         args.steric_weight = float(args.steric_max_weight)
+
+    args.valence_weight = max(float(args.valence_weight), 0.0)
+    if args.valence_weight <= 0.0 and args.valence_enabled:
+        args.valence_weight = 0.5
 
     # Seed torch's GLOBAL generator — the sampler's randn noise draws come
     # from it, while --seed previously only reached the numpy atom-count rng.
@@ -344,6 +369,12 @@ def main() -> None:
             steric_sigma_scale=args.steric_sigma_scale,
             steric_k_rep=args.steric_k_rep,
             steric_r_clash=args.steric_r_clash,
+            valence_weight=args.valence_weight,
+            valence_start_frac=args.valence_start_frac,
+            valence_tau=args.valence_tau,
+            valence_covalent_factor=args.valence_covalent_factor,
+            valence_k_val=args.valence_k_val,
+            valence_max_step=args.valence_max_step,
             coord_temperature=args.coord_temperature,
             cond=cond,
             guidance_scale=args.guidance_scale if cond is not None else 0.0,
@@ -491,6 +522,12 @@ def main() -> None:
             steric_sigma_scale=args.steric_sigma_scale,
             steric_k_rep=args.steric_k_rep,
             steric_r_clash=args.steric_r_clash,
+            valence_weight=args.valence_weight,
+            valence_start_frac=args.valence_start_frac,
+            valence_tau=args.valence_tau,
+            valence_covalent_factor=args.valence_covalent_factor,
+            valence_k_val=args.valence_k_val,
+            valence_max_step=args.valence_max_step,
             coord_temperature=args.coord_temperature,
             keep_largest_fragment=args.keep_largest_fragment,
             # Bond-perception chain protocol (plan workstreams A1–A4) —

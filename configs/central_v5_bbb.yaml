@@ -109,6 +109,15 @@ generation:
   eval_every: 100               # 39 quick_valid probes over the budget
   num_samples: 16
   ddim_steps: 20
+  # Test-time physical valence guidance (contract bbb-valence-dpo-v2.1).
+  # Left at 0.0 so the existing V5 eval recipes are unchanged; the CLI flags
+  # in generate_and_eval.py are the supported way to enable it per run.
+  valence_weight: 0.0
+  valence_start_frac: 0.7
+  valence_tau: 0.05
+  valence_covalent_factor: 1.10
+  valence_k_val: 1.0
+  valence_max_step: 0.15
 
 bbb_classifier:
   checkpoint: models/bbb_oracle.pt

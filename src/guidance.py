@@ -73,6 +73,212 @@ _FALLBACK_RADIUS: float = 0.76  # carbon
 DEFAULT_SIGMA_SCALE: float = 0.75
 DEFAULT_K_REP: float = 1.0
 
+# ---------------------------------------------------------------------------
+# Physical valence guidance (contract bbb-valence-dpo-v2.1)
+# ---------------------------------------------------------------------------
+#
+# Continuous hypervalency penalty used as test-time guidance during reverse
+# diffusion. Unlike the chiral/hard-sphere steric term, this energy is built
+# from a soft bond-perception model: two atoms are "bonded" with a smooth
+# sigmoid that turns on below a calibrated covalent envelope, so the model can
+# be penalized for atoms whose *perceived* coordination exceeds the physical
+# maximum for their element.
+#
+# Design notes that matter for the contract:
+#   1. Envelope factor 1.10, not 1.20. 1.20 puts the C–C envelope at 1.82 Å,
+#      which sits inside vdW contact and begins treating aromatic rings and
+#      stretched aliphatic bonds as over-bonded, shattering real covalent
+#      structure. 1.10 puts the C–C envelope at 1.67 Å, so a real 1.54 Å bond
+#      is counted as ~0.93 of a bond, a stretched 1.65 Å bond as ~0.61, and a
+#      non-bonded 1.75 Å contact as ~0.17.
+#   2. Sharp gate tau = 0.05 Å, not 0.10 Å. The sharper gate makes the
+#      transition narrow enough that near-contact pairs contribute almost
+#      nothing while true bonded pairs are counted fully.
+#   3. The potential only penalizes *excess* perceived valence above v_max(z).
+#      A saturated carbon with four real bonds receives no penalty; a
+#      hypervalent carbon with six close neighbors does.
+#   4. Self-pairs are masked out, and the energy is per-molecule so cross-graph
+#      pairs never leak in.
+#
+# This is deliberately import-light and RDKit-free so the sampler can call it
+# without pulling RDKit onto the sampling import path.
+# ---------------------------------------------------------------------------
+
+DEFAULT_VALENCE_MAX: dict[int, int] = {
+    0: 0,   # padding / dummy nodes carry zero valence
+    1: 1,   # hydrogen
+    6: 4,   # carbon
+    7: 3,   # nitrogen
+    8: 2,   # oxygen
+    9: 1,   # fluorine
+    15: 3,  # phosphorus
+    16: 2,  # sulfur
+    17: 1,  # chlorine
+    35: 1,  # bromine
+    53: 1,  # iodine
+}
+
+DEFAULT_VALENCE_TAU: float = 0.05
+DEFAULT_VALENCE_COVALENT_FACTOR: float = 1.10
+DEFAULT_VALENCE_K_VAL: float = 1.0
+DEFAULT_VALENCE_MAX_STEP: float = 0.15
+
+
+def valence_energy(
+    pos: torch.Tensor,
+    batch: torch.Tensor,
+    atom_types: torch.Tensor | None = None,
+    tau: float = DEFAULT_VALENCE_TAU,
+    covalent_factor: float = DEFAULT_VALENCE_COVALENT_FACTOR,
+    k_val: float = DEFAULT_VALENCE_K_VAL,
+) -> torch.Tensor:
+    """Continuous hypervalency penalty for a batch of molecules.
+
+    Uses a soft bond-perception sigmoid over pairwise distances. The perceived
+    valence of atom i is the sum over j != i of
+
+        sigmoid( (d_cov(z_i, z_j) - d_ij) / tau )
+
+    where d_cov is the calibrated covalent envelope and tau is the sharpness.
+    The energy is
+
+        0.5 * k_val * sum_i max(0, soft_valence_i - v_max(z_i))^2
+
+    Args:
+        pos: (N, 3) coordinates.
+        batch: (N,) molecule index per atom.
+        atom_types: (N,) atomic numbers. None falls back to carbon valence.
+        tau: sigmoid sharpness in Å.
+        covalent_factor: multiplier on the radii sum for the envelope.
+        k_val: force constant.
+
+    Returns:
+        Scalar, differentiable w.r.t. pos.
+    """
+    if pos.size(0) < 2:
+        return torch.zeros((), device=pos.device, dtype=pos.dtype)
+
+    radii = atom_radii(atom_types, pos.size(0), pos.device, pos.dtype)
+    if atom_types is None:
+        v_max_table = torch.full((pos.size(0),), 4.0, device=pos.device, dtype=pos.dtype)
+    else:
+        types = atom_types.long().reshape(-1)
+        v_max_table = torch.tensor(
+            [DEFAULT_VALENCE_MAX.get(int(z), 4) for z in types.tolist()],
+            device=pos.device,
+            dtype=pos.dtype,
+        )
+
+    active = (v_max_table > 0).to(pos.dtype)
+    total_energy = torch.zeros((), device=pos.device, dtype=pos.dtype)
+    for g in batch.unique():
+        idx = (batch == g).nonzero(as_tuple=False).squeeze(-1)
+        if idx.numel() < 2:
+            continue
+        p = pos[idx]
+        r = radii[idx]
+        v_max = v_max_table[idx]
+
+        d = torch.sqrt(torch.cdist(p, p).square() + 1e-12)
+        d_cov = covalent_factor * (r.unsqueeze(0) + r.unsqueeze(1))
+
+        soft_bonds = torch.sigmoid((d_cov - d) / tau)
+        off_diag = 1.0 - torch.eye(
+            idx.numel(), device=pos.device, dtype=pos.dtype
+        )
+        soft_bonds = soft_bonds * off_diag
+
+        # Only atoms with actual bonding capacity contribute to perceived
+        # valence; dummy/padding atoms with v_max = 0 must not create or
+        # receive soft bonds.
+        active_g = active[idx]
+        soft_bonds = soft_bonds * active_g.unsqueeze(0) * active_g.unsqueeze(1)
+
+        soft_valence = soft_bonds.sum(dim=-1)
+        excess = (soft_valence - v_max).clamp_min(0.0)
+        total_energy = total_energy + 0.5 * k_val * excess.square().sum()
+
+    return total_energy
+
+
+def valence_guidance(
+    x0: torch.Tensor,
+    batch: torch.Tensor,
+    atom_types: torch.Tensor | None = None,
+    weight: float = 0.0,
+    tau: float = DEFAULT_VALENCE_TAU,
+    covalent_factor: float = DEFAULT_VALENCE_COVALENT_FACTOR,
+    k_val: float = DEFAULT_VALENCE_K_VAL,
+    max_step: float = DEFAULT_VALENCE_MAX_STEP,
+    clamp: float | None = None,
+) -> torch.Tensor:
+    """One guided step in clean coordinate space: x0 - w * grad E_val(x0).
+
+    Preserves center-of-mass invariance per molecule and clamps the maximum
+    per-atom displacement so a badly collapsed molecule cannot explode.
+
+    Args:
+        x0: clean-coordinate estimate.
+        batch: molecule index per atom.
+        atom_types: atomic numbers per atom. None falls back to carbon radii.
+        weight: guidance strength. <= 0 is a no-op.
+        tau / covalent_factor / k_val: forwarded to valence_energy.
+        max_step: per-atom displacement cap in Å.
+        clamp: optional per-component bound applied after the step.
+
+    Returns:
+        Guided clean-coordinate estimate.
+    """
+    if weight <= 0.0 or x0.size(0) < 2:
+        return x0
+
+    with torch.enable_grad():
+        x = x0.detach().requires_grad_(True)
+        energy = valence_energy(
+            x, batch, atom_types=atom_types,
+            tau=tau, covalent_factor=covalent_factor, k_val=k_val,
+        )
+        (grad,) = torch.autograd.grad(energy, x, allow_unused=True)
+
+    if grad is None:
+        return x0
+
+    grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Center-of-mass zero projection per molecule.
+    for g in batch.unique():
+        m = (batch == g)
+        row_grad = grad[m].clone()
+        row_grad = row_grad - row_grad.mean(dim=0, keepdim=True)
+        grad[m] = row_grad
+
+    step = (-weight * grad).clamp(-max_step, max_step)
+    guided = x0 + step
+    if clamp is not None:
+        guided = guided.clamp(-clamp, clamp)
+    return guided
+
+
+def valence_guidance_weight(
+    step_idx: int,
+    num_steps: int,
+    ramp_start_frac: float = 0.7,
+    max_weight: float = 0.0,
+) -> float:
+    """Linear ramp for valence guidance, mirroring the steric ramp.
+
+    0 until ``ramp_start_frac`` of the reverse trajectory has elapsed, then
+    linear up to ``max_weight``. If ``max_weight <= 0`` or the trajectory is
+    too short, returns 0.
+    """
+    if max_weight <= 0.0 or num_steps < 1:
+        return 0.0
+    progress = step_idx / max(num_steps - 1, 1)
+    if progress <= ramp_start_frac:
+        return 0.0
+    ramp = (progress - ramp_start_frac) / max(1.0 - ramp_start_frac, 1e-8)
+    return float(max_weight) * ramp
+
 
 def steric_guidance_weight(
     step_idx: int,

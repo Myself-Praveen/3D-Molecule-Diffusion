@@ -616,14 +616,48 @@ References re-check: Holkar 2019 citation link was broken; fixed to https://arxi
 
 Next step: open the graph debugger to understand why the model is not learning. (Note: the project has no separate 'graph debugger' binary — this is shorthand for tracing the kNN graph construction in src/utils/graph.py and the edge_index pass-through into the EGNN sampler/training loop. Verified build_knn_graph returns a valid (2, E) edge_index on toy batches (single 10-atom batch with k=4; two-molecule 5+4 batch with k=3, no cross-graph edges, no self-loops), so the graph code itself is not the obvious suspect. The immediate follow-up is to confirm the graph is being built and consumed correctly at generation/train time: check the PyG 'Unable to infer num_nodes' warning in eval logs, trace the first EGNN forward pass's edge_index value, and confirm the model's `initial_pos = pos.clone()` guard in src/models/egnn.py is on the branch being run. The warning is already widespread across existing eval logs, so it needs a concrete reproduction before it's treated as the cause.
 
-Data reality check: I also read the actual molecule-level numbers behind the latest eval outputs, because 'not learning' can mean several different things and the follow-up depends on which one it is. The numbers point at fragmentation rather than a total no-signal model:
+Data reality check: I also read the actual molecule-level numbers behind the latest eval outputs, because 'not learning' can mean several different things and the follow-up depends on which one it is. The numbers point at fragmentation rather than a total no-signal model. I checked more runs than the two I cited earlier — every clump.json in the repo plus the two V4 flow metrics — and they form a consistent picture:
 
-- W5 steric guidance at n=86 (outputs/eval_v5_bbb_steric_w5/clump.json): still a clump molecule — bonds_per_mol 37.1 vs ~27 for real BBBP, 4.5 fragments/mol, only 29% single-fragment, nn_mean 1.28 vs 1.15 for the reference, contact_fraction 6.6% vs ~9.9%. The steric term changed the geometry but did not make the molecules look like real drugs.
-- W1 steric guidance at n=1000 (outputs/eval_v5_bbb_steric_w1_n1000/clump.json): essentially the same picture at scale — 4.98 fragments/mol, 25% single-fragment, bonds_per_mol 37.2, nn_mean 1.29. Scaling the sample count did not change the underlying issue.
-- V4 flow last at n=1000 (outputs/eval_v4_flow_last_n1000/metrics.json): Validity 20.2%, ConnectedValidity 16.2%, BBB% = -1.0 (masked / not scored), ScaffDiv 0.663, ScaffCov 0.011.
-- V4 flow probe last at n=200 (outputs/eval_v4_flow_probe_last1000/metrics.json): Validity 17.5%, ConnectedValidity 15.0%, BBB% = -1.0.
+Clump-cluster (bonds_per_mol high, ~37, but fragmented):
+- V5 BBB base at n=174 (outputs/eval_v5_bbb_base/clump.json): verdict FRAGMENTED CLUMPS — 5.9 fragments/mol vs 1.0 real, 0.93 bonds/atom vs 1.00, Rg 3.75 vs 3.09 Å, single-fragment 20%.
+- Pre-RL ruler at n=398 (outputs/eval_pre_rl/clump.json): 4.8 fragments/mol, 0.95 bonds/atom, Rg 3.68 vs 3.09, single-fragment 22.6%.
+- V5 BBB ctemp 0.5 at n=105 (outputs/eval_v5_bbb_ctemp0p5/clump.json): different failure mode — UNDER-BONDED / DISPERSED, 0.56 bonds/atom, 20.2 fragments/mol, Rg 7.07 Å, single-fragment 0%. So the family is not uniform: some knobs produce clumps, some produce loose dispersed atoms.
+- W5 steric n=86 (outputs/eval_v5_bbb_steric_w5/clump.json): 4.5 fragments/mol, 0.96 bonds/atom, nn_mean 1.28 vs 1.15, contact_fraction 6.6% vs 9.9%.
+- W1 steric n=1000 (outputs/eval_v5_bbb_steric_w1_n1000/clump.json): 4.98 fragments/mol, 0.95 bonds/atom, nn_mean 1.29, single-fragment 25%.
+- W1 steric n=86 (outputs/eval_v5_bbb_steric_w1/clump.json): same family as W5.
+- W10 steric (outputs/eval_v5_bbb_steric_w10/clump.json): same family.
 
-So the practical question the debugger should first answer is narrower than 'why is nothing learning': is the model producing one coherent molecule per sample and failing chemistry, or is it producing many small fragments that never join up? The W5/W1 numbers say fragments (largest_fragment_fraction ~0.75–0.80), which points at the connectivity/sampling side rather than the coordinate fine-tuning side.)
+V4 flow metrics (no clump.json in those dirs, so I read metrics.json):
+- V4 flow last n=1000 (outputs/eval_v4_flow_last_n1000/metrics.json): Validity 20.2%, ConnectedValidity 16.2%, BBB% = -1.0 (masked), ScaffDiv 0.663, ScaffCov 0.011.
+- V4 flow probe last n=200 (outputs/eval_v4_flow_probe_last1000/metrics.json): Validity 17.5%, ConnectedValidity 15.0%, BBB% = -1.0.
+
+So the first practical question is now confirmed across more data, not just guessed: the dominant failure is fragmentation, with one notable branch (ctemp 0.5) that goes the other way and under-bonds / disperses. That points the debugger at the connectivity/sampling side first — can one sample become one molecule — rather than at the coordinate fine-tuning side alone.
+
+Follow-up 1/3 done: I traced the sampling loop. In `src/sampling.py` the BBB path rebuilds `edge_index = build_knn_graph(pos, batch, k=4)` every reverse step (~line 311; the flow path does the same at ~243), then feeds it into the model, then updates pos and z and re-centers per molecule. The graph is therefore fresh each step, which is consistent with the model not being able to hold a molecule together across the trajectory: if kNN is rebuilt on a loose/noisy configuration, message passing has no persistent bond memory. The pieces that look most relevant for the fragmentation hypothesis are the fixed small k=4 rebuild on a possibly-spread configuration, the coord_temperature perturbation plus the DDPM/DDIM noise term, the per-molecule centering that only re-centers and doesn't reassemble, and the steric guidance acting on x0_pred without an explicit connectivity term. I also ran a small connectivity probe on `build_knn_graph` itself across k=2..8 on two toy 20-atom configurations (spread 2.5 Å and compact 0.4 Å); both stayed connected at every k, so a single kNN graph on a single molecule is not, by itself, the fragmentation point — the issue is more likely that the *trajectory* keeps the configuration loose enough that the graph can't hold the molecule in one basin across steps. The next check is to confirm this against an actual trajectory, not just the final SDF.
+
+Follow-up 2/3: I inspected the checkpoint behind the most interesting sweep result (bbb_full/best.pt, the one that actually responds to guidance). It's a 6-layer EGNN, node_dim=128, edge_dim=128, time_dim=32, cond_dim=32, 2 cond classes (so BBB yes/no conditioning), trained 6159 epochs at batch 64, lr 3e-4, kNN=6, type_loss_weight 0.5, valence_loss_weight 1.0 with valence_tau=200, diversity_loss_weight 0.01, guidance_scale 2.0 baked into the conditioning config, eval_every 50, num_samples 16, ddim_steps 20. No self-conditioning flags, no coord_refine_layers, no knn_schedule — that matches the config embedded in the checkpoint, and it's the same Tier-1 topology the V5 runs used, not the Tier-2 features added later.
+
+A couple things stand out from this checkpoint's config:
+- The training generation config is tiny (num_samples 16, ddim_steps 20) while the sweep that used it generated 1000 samples with ddim 200 and eta 1.0 — so the checkpoint was never stress-tested at the evaluation budget it was later measured with.
+- The kNN used in training was 6, but the sampler rebuilds edge_index at k=4 every step — a mismatch between the graph scale the model saw in training and the graph it sees at sampling time.
+- val_loss at best is 0.683, and epochs_no_improve is 0, which suggests the run stopped because it hit the epoch cap, not because validation stopped improving — the model may have been under-trained relative to the patience/cap setup.
+
+So the checkpoint that 'works' under guidance is also the one whose training setup most clearly differs from the sweeping setup — that's the concrete thing to reconcile before trusting any of the sweep numbers as properties of the model rather than artifacts of the eval config.
+
+Follow-up 2/3 continued: I then read the configs embedded in every best.pt still on disk (bbb, bbb_full, bbb_renorm, bbb_longprobe, bbb_geofix, central_v5_bbb, central_v4_eps, plus the old pre_coordfix/coordfix_v1/lambda2_v1/lambda2_v2 checkpoints that predate conditioning). The clearest pattern is that the checkpoints split into two families by topology:
+
+Tier-1 family (6 layers, node_dim 128, no self-conditioning, no coord_refine, no knn_schedule): bbb (epoch 61, val 0.842), bbb_full (epoch 6159, val 0.683), bbb_renorm (epoch 1160, val 0.716), bbb_longprobe (epoch 1127, val 0.725), bbb_geofix (epoch 917, val 0.707, geofix=True). These are the ones whose sweep numbers I just read. bbb never improves past ConnV 0.0 at any guidance scale; bbb_full improves under guidance only by collapsing validity.
+
+Tier-2 family (8 layers, node_dim 256, attention, self_condition, coord_refine_layers, knn_schedule): central_v5_bbb (epoch 2217, val 0.887), central_v4_eps (epoch 117, val 0.825). These are the architectures built to fix the geometry problem, and they exist but the V5 eval numbers behind them (in the clump.json cluster) still report fragmented clumps. So the better architecture is present and trained, but the eval outputs in the repo still show the fragmentation problem on it.
+
+A few concrete mismatches between training config and eval config that showed up:
+- bbb_full trained with num_samples 16, ddim 20, save_every 100, eval_every 50, but was swept with num_samples 1000, ddim 200, eta 1.0, quadratic — same checkpoint, very different trajectory budget.
+- bbb_full trained kNN=6 but the sampler rebuilds at k=4.
+- central_v5_bbb trained kNN=8 with knn_schedule [4,4,8,8,12,12,16,16], but the sampler's fixed rebuild path uses k=4 when knn_schedule is not passed (and the V5 eval script's config may or may not pass it).
+- bbb_full stopped at epoch 6159 of a 7700 cap with epochs_no_improve=0, so it hit the cap rather than early-stopping — possible under-training relative to the patience setup.
+- The pre-conditioning checkpoints (pre_coordfix, coordfix_v1, lambda2_v1, lambda2_v2) are 4-layer/64-dim/no-conditioning artifacts that predate the BBBP conditioning work and are not the checkpoints the V5 numbers were measured on.
+
+The practical conclusion: the debugger's next concrete move is not 'run another eval' but 're-run the V5 central_v5_bbb/best.pt eval with the knn_schedule and ddim budget it was trained with, and confirm whether the fragmentation is still there on the Tier-2 checkpoint under its own training recipe'. That's the single most informative next eval because it isolates checkpoint/architecture from eval-config artifact.
 
 [End of session record]
 

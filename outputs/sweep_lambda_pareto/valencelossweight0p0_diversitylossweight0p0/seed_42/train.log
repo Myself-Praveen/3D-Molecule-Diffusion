@@ -1,0 +1,185 @@
+$ /home/sahil/Desktop/3D-Molecule-Diffusion/.venv/bin/python /home/sahil/Desktop/3D-Molecule-Diffusion/train.py --config /home/sahil/Desktop/3D-Molecule-Diffusion/outputs/sweep_lambda_pareto/valencelossweight0p0_diversitylossweight0p0/seed_42/config.yaml
+
+/home/sahil/Desktop/3D-Molecule-Diffusion/.venv/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[22:24:33] Explicit valence for atom # 1 N, 4, is greater than permitted
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] Explicit valence for atom # 6 N, 4, is greater than permitted
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] Explicit valence for atom # 6 N, 4, is greater than permitted
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] Explicit valence for atom # 11 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 12 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] Explicit valence for atom # 5 N, 4, is greater than permitted
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+[22:24:33] WARNING: not removing hydrogen atom without neighbors
+Training on: cpu
+SMILES->3D [bbbp]: 0it [00:00, ?it/s]SMILES->3D [bbbp]: 0it [00:00, ?it/s]
+[22:26:46] Explicit valence for atom # 0 N, 6, is greater than permitted
+[22:26:46] Explicit valence for atom # 1 H, 4, is greater than permitted
+[22:26:46] Explicit valence for atom # 6 H, 3, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 7, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 3, is greater than permitted
+[22:26:46] Explicit valence for atom # 1 H, 8, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 2, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 2, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 N, 6, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 2, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 7, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 4, is greater than permitted
+[22:26:46] Explicit valence for atom # 2 H, 6, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 5, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 6, is greater than permitted
+[22:26:46] Explicit valence for atom # 0 H, 7, is greater than permitted
+[22:29:01] Explicit valence for atom # 3 O, 3, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 O, 5, is greater than permitted
+[22:29:01] Explicit valence for atom # 2 H, 2, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 4, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 4, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 F, 4, is greater than permitted
+[22:29:01] Explicit valence for atom # 1 N, 5, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 3, is greater than permitted
+[22:29:01] Explicit valence for atom # 1 C, 9, is greater than permitted
+[22:29:01] Explicit valence for atom # 1 H, 3, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 5, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 3, is greater than permitted
+[22:29:01] Explicit valence for atom # 3 H, 2, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 4, is greater than permitted
+[22:29:01] Explicit valence for atom # 0 H, 4, is greater than permitted
+[22:29:01] Explicit valence for atom # 1 O, 4, is greater than permitted
+[22:31:16] Explicit valence for atom # 3 H, 2, is greater than permitted
+[22:31:16] Explicit valence for atom # 1 O, 3, is greater than permitted
+[22:31:16] Explicit valence for atom # 6 F, 2, is greater than permitted
+[22:31:16] Explicit valence for atom # 2 H, 2, is greater than permitted
+[22:31:16] Explicit valence for atom # 17 O, 3, is greater than permitted
+[22:31:16] Explicit valence for atom # 0 C, 5, is greater than permitted
+[22:31:16] Explicit valence for atom # 13 H, 2, is greater than permitted
+[22:31:16] Explicit valence for atom # 1 N, 4, is greater than permitted
+[22:31:16] Explicit valence for atom # 2 H, 3, is greater than permitted
+[22:31:16] Explicit valence for atom # 1 C, 6, is greater than permitted
+[22:31:16] Explicit valence for atom # 2 N, 8, is greater than permitted
+[22:31:16] Explicit valence for atom # 0 H, 3, is greater than permitted
+[22:31:16] Explicit valence for atom # 6 H, 3, is greater than permitted
+[22:31:16] Explicit valence for atom # 5 H, 2, is greater than permitted
+[22:31:16] Explicit valence for atom # 0 N, 5, is greater than permitted
+[22:31:16] Explicit valence for atom # 1 F, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 3 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 3 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 14 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 15 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 4 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 5 F, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 12 O, 4, is greater than permitted
+[22:33:29] Explicit valence for atom # 13 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 0 C, 5, is greater than permitted
+[22:33:29] Explicit valence for atom # 1 C, 5, is greater than permitted
+[22:33:29] Explicit valence for atom # 4 H, 2, is greater than permitted
+[22:33:29] Explicit valence for atom # 0 F, 4, is greater than permitted
+[22:33:29] Explicit valence for atom # 6 H, 2, is greater than permitted
+Dataset split — train: 1628, val: 205, test: 205
+Running epochs 1..200 (total 200)
+  ! mapping 36 exotic atoms (Z>=10) to carbon; consider higher model.num_types for full fidelity
+Epoch    1 | train_pos=0.7002  train_type=1.6579  baseline=1.0000 | val_pos=0.6994  val_type=1.2326  val=1.3157 | lr=3.00e-04
+  ✓ Saved best model (val_loss=1.3157)
+Epoch    2 | train_pos=307344709178057344.0000  train_type=1044.6342  baseline=1.0000 | val_pos=0.9584  val_type=1.1121  val=1.5145 | lr=3.00e-04
+Epoch    3 | train_pos=1014529.9622  train_type=1.5408  baseline=1.0000 | val_pos=0.5388  val_type=0.9748  val=1.0262 | lr=3.00e-04
+  ✓ Saved best model (val_loss=1.0262)
+Epoch    4 | train_pos=0.5596  train_type=0.9714  baseline=1.0000 | val_pos=0.5209  val_type=0.9636  val=1.0027 | lr=3.00e-04
+  ✓ Saved best model (val_loss=1.0027)
+Epoch    5 | train_pos=0.5799  train_type=1.0028  baseline=1.0000 | val_pos=0.5494  val_type=0.9727  val=1.0358 | lr=3.00e-04
+Epoch    6 | train_pos=0.5191  train_type=0.9632  baseline=1.0000 | val_pos=0.5222  val_type=0.9261  val=0.9853 | lr=2.99e-04
+  ✓ Saved best model (val_loss=0.9853)
+Epoch    7 | train_pos=0.5312  train_type=0.9336  baseline=1.0000 | val_pos=0.5029  val_type=0.9299  val=0.9679 | lr=2.99e-04
+  ✓ Saved best model (val_loss=0.9679)
+Epoch    8 | train_pos=0.5217  train_type=0.9238  baseline=1.0000 | val_pos=0.4810  val_type=0.9087  val=0.9353 | lr=2.99e-04
+  ✓ Saved best model (val_loss=0.9353)
+Epoch    9 | train_pos=0.5088  train_type=0.9595  baseline=1.0000 | val_pos=0.4856  val_type=0.9274  val=0.9493 | lr=2.99e-04
+Epoch   10 | train_pos=0.5139  train_type=0.9655  baseline=1.0000 | val_pos=0.5167  val_type=0.8773  val=0.9553 | lr=2.98e-04 | quick_valid=0.0%
+Epoch   11 | train_pos=0.5350  train_type=0.9572  baseline=1.0000 | val_pos=0.5458  val_type=1.0276  val=1.0596 | lr=2.98e-04
+Epoch   12 | train_pos=0.5064  train_type=0.9582  baseline=1.0000 | val_pos=0.4783  val_type=0.8617  val=0.9091 | lr=2.97e-04
+  ✓ Saved best model (val_loss=0.9091)
+Epoch   13 | train_pos=0.5024  train_type=0.8810  baseline=1.0000 | val_pos=0.4820  val_type=0.8548  val=0.9094 | lr=2.97e-04
+Epoch   14 | train_pos=0.4839  train_type=0.8760  baseline=1.0000 | val_pos=0.4153  val_type=0.9317  val=0.8812 | lr=2.96e-04
+  ✓ Saved best model (val_loss=0.8812)
+Epoch   15 | train_pos=0.4952  train_type=0.8744  baseline=1.0000 | val_pos=0.5328  val_type=0.8273  val=0.9465 | lr=2.96e-04
+Epoch   16 | train_pos=0.4644  train_type=0.8686  baseline=1.0000 | val_pos=0.4376  val_type=0.8995  val=0.8874 | lr=2.95e-04
+Epoch   17 | train_pos=0.4712  train_type=0.8718  baseline=1.0000 | val_pos=0.5088  val_type=0.8463  val=0.9319 | lr=2.95e-04
+Epoch   18 | train_pos=0.4477  train_type=0.8741  baseline=1.0000 | val_pos=0.4167  val_type=0.8595  val=0.8464 | lr=2.94e-04
+  ✓ Saved best model (val_loss=0.8464)
+Epoch   19 | train_pos=0.4732  train_type=0.8350  baseline=1.0000 | val_pos=0.5172  val_type=0.8098  val=0.9221 | lr=2.93e-04
+Epoch   20 | train_pos=0.4507  train_type=0.8475  baseline=1.0000 | val_pos=0.4778  val_type=0.8372  val=0.8964 | lr=2.93e-04 | quick_valid=0.0%
+Epoch   21 | train_pos=0.4444  train_type=0.8581  baseline=1.0000 | val_pos=0.5440  val_type=0.8039  val=0.9459 | lr=2.92e-04
+Epoch   22 | train_pos=0.4669  train_type=0.8601  baseline=1.0000 | val_pos=0.4967  val_type=0.8234  val=0.9084 | lr=2.91e-04
+Epoch   23 | train_pos=0.4586  train_type=0.8391  baseline=1.0000 | val_pos=0.4676  val_type=0.8257  val=0.8804 | lr=2.90e-04
+Epoch   24 | train_pos=0.4590  train_type=0.8322  baseline=1.0000 | val_pos=0.4569  val_type=0.8229  val=0.8683 | lr=2.89e-04
+Epoch   25 | train_pos=0.4385  train_type=0.8442  baseline=1.0000 | val_pos=0.4421  val_type=0.8412  val=0.8627 | lr=2.89e-04
+Epoch   26 | train_pos=0.4480  train_type=0.8356  baseline=1.0000 | val_pos=0.4360  val_type=0.8207  val=0.8464 | lr=2.88e-04
+  ✓ Saved best model (val_loss=0.8464)
+Epoch   27 | train_pos=0.4596  train_type=0.8202  baseline=1.0000 | val_pos=0.4166  val_type=0.8466  val=0.8399 | lr=2.87e-04
+  ✓ Saved best model (val_loss=0.8399)
+Epoch   28 | train_pos=0.4467  train_type=0.8447  baseline=1.0000 | val_pos=0.4043  val_type=0.8450  val=0.8268 | lr=2.86e-04
+  ✓ Saved best model (val_loss=0.8268)
+Epoch   29 | train_pos=0.4227  train_type=0.8592  baseline=1.0000 | val_pos=0.4865  val_type=0.8061  val=0.8896 | lr=2.85e-04
+Epoch   30 | train_pos=0.4474  train_type=0.8389  baseline=1.0000 | val_pos=0.4622  val_type=0.8343  val=0.8794 | lr=2.84e-04 | quick_valid=0.0%
+Epoch   31 | train_pos=0.4427  train_type=0.8394  baseline=1.0000 | val_pos=0.4119  val_type=0.8539  val=0.8389 | lr=2.83e-04
+Epoch   32 | train_pos=0.4520  train_type=0.8407  baseline=1.0000 | val_pos=0.4515  val_type=0.8458  val=0.8744 | lr=2.81e-04
+Epoch   33 | train_pos=0.4350  train_type=0.8622  baseline=1.0000 | val_pos=0.4632  val_type=0.8300  val=0.8782 | lr=2.80e-04
+Epoch   34 | train_pos=0.4351  train_type=0.8467  baseline=1.0000 | val_pos=0.5028  val_type=0.7703  val=0.8879 | lr=2.79e-04
+Epoch   35 | train_pos=0.4334  train_type=0.8492  baseline=1.0000 | val_pos=0.4269  val_type=0.8486  val=0.8512 | lr=2.78e-04
+Epoch   36 | train_pos=0.4349  train_type=0.8401  baseline=1.0000 | val_pos=0.4104  val_type=0.8435  val=0.8321 | lr=2.77e-04
+Epoch   37 | train_pos=0.4431  train_type=0.8363  baseline=1.0000 | val_pos=0.5021  val_type=0.7832  val=0.8937 | lr=2.75e-04
+Epoch   38 | train_pos=0.4408  train_type=0.8378  baseline=1.0000 | val_pos=0.4403  val_type=0.8222  val=0.8514 | lr=2.74e-04
+Epoch   39 | train_pos=0.4403  train_type=0.8343  baseline=1.0000 | val_pos=0.4155  val_type=0.8951  val=0.8630 | lr=2.73e-04
+Epoch   40 | train_pos=0.4555  train_type=0.8209  baseline=1.0000 | val_pos=0.4517  val_type=0.8029  val=0.8532 | lr=2.71e-04 | quick_valid=18.8%
+Epoch   41 | train_pos=0.4500  train_type=0.8218  baseline=1.0000 | val_pos=0.4575  val_type=0.7895  val=0.8522 | lr=2.70e-04
+Epoch   42 | train_pos=0.4303  train_type=0.8563  baseline=1.0000 | val_pos=0.4055  val_type=0.8608  val=0.8359 | lr=2.69e-04
+Epoch   43 | train_pos=0.4456  train_type=0.8392  baseline=1.0000 | val_pos=0.5029  val_type=0.7679  val=0.8868 | lr=2.67e-04
+Epoch   44 | train_pos=0.4484  train_type=0.8309  baseline=1.0000 | val_pos=0.5020  val_type=0.7864  val=0.8952 | lr=2.66e-04
+Epoch   45 | train_pos=0.4313  train_type=0.8382  baseline=1.0000 | val_pos=0.4265  val_type=0.8456  val=0.8493 | lr=2.64e-04
+Epoch   46 | train_pos=0.4183  train_type=0.8463  baseline=1.0000 | val_pos=0.4329  val_type=0.8039  val=0.8348 | lr=2.63e-04
+Epoch   47 | train_pos=0.4276  train_type=0.8400  baseline=1.0000 | val_pos=0.4465  val_type=0.8117  val=0.8523 | lr=2.61e-04
+Epoch   48 | train_pos=0.4334  train_type=0.8238  baseline=1.0000 | val_pos=0.4369  val_type=0.8116  val=0.8426 | lr=2.59e-04
+Early stopping at epoch 48 (patience=20)
+
+--- Test evaluation ---
+Test pos_loss=0.4173  test_type_loss=0.8525  test_loss=0.8436

@@ -1,0 +1,96 @@
+/home/sahil/Desktop/3D-Molecule-Diffusion/.venv/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[02:24:32] Explicit valence for atom # 1 N, 4, is greater than permitted
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] Explicit valence for atom # 6 N, 4, is greater than permitted
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] Explicit valence for atom # 6 N, 4, is greater than permitted
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] Explicit valence for atom # 11 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 12 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] Explicit valence for atom # 5 N, 4, is greater than permitted
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+[02:24:32] WARNING: not removing hydrogen atom without neighbors
+SMILES->3D [bbbp]: 0it [00:00, ?it/s]SMILES->3D [bbbp]: 0it [00:00, ?it/s]
+
+Generated: outputs/eval_v5_bbb_steric_w10/molecules.sdf (n=84)
+Reference: bbbp (n=200)
+
+metric           generated   reference
+--------------------------------------
+molecules               84         200
+atoms/mol           41.060      26.915
+bonds/mol           36.952      26.880
+bonds/atom           0.900       0.999
+contact frac         0.067       0.099
+NN mean (A)          1.302       1.149
+NN p50 (A)           1.261       1.095
+Rgyr (A)             3.754       3.086
+corr(bonds,N)        0.826       0.979
+fragments/mol        6.571       1.040
+largest frac         0.744       0.997
+1-frag %            29.762      97.000
+
+per-element-pair contacts per molecule (bonds)
+pair         generated   reference
+----------------------------------
+C-Br             0.000       0.055
+C-C             15.226       7.785
+C-Cl             0.000       0.425
+C-F              0.774       0.255
+C-H             13.536      11.820
+C-N              3.143       1.715
+C-O              3.107       2.405
+C-S              0.000       0.140
+H-H              0.012       0.005
+N-H              0.417       1.130
+N-N              0.083       0.070
+N-O              0.107       0.065
+O-H              0.512       0.735
+O-O              0.024       0.010
+S-H              0.000       0.005
+S-S              0.000       0.005
+other            0.012       0.255
+
+Verdict: FRAGMENTED CLUMPS — 6.6 fragments/mol vs 1.0 real at reference-like local bonding (0.90 vs 1.00 bonds/atom); radius of gyration 3.75 A vs 3.09 real
+Saved -> outputs/eval_v5_bbb_steric_w10/clump.json

@@ -1,0 +1,178 @@
+{
+  "report": {
+    "n_total": 418,
+    "n_valid": 418,
+    "n_3d": 418,
+    "stage1_perception": {
+      "NonSingleFrac": 0.0,
+      "AromaticFrac": 0.0,
+      "MeanBondOrder": 1.0,
+      "StereocentresPerMol": 0.5358851674641149,
+      "StereoDefinedFrac": 0.9633572567783094,
+      "Perception%": 0.9569377990430622,
+      "StereoReadback%": 100.0
+    },
+    "stage2_geometry": {
+      "n_3d": 418.0,
+      "MeanBondStrainPct": 14.978899713127031,
+      "MaxBondStrainPct": 97.1115648736341,
+      "MeanStrainKcal": 987.3975572749132
+    },
+    "stage3_synthesis": {
+      "SAComplexity": 5.278133971291867,
+      "PAINSFree%": 100.0
+    },
+    "stage4_domain": {
+      "InDomain%": 0.0,
+      "MeanMaxTanimoto": 0.1299445824226226,
+      "PctBeyond40": 0.0,
+      "PctBeyond60": 0.0
+    },
+    "stage5_admet": {
+      "ESOL_logS": -2.73278596339713,
+      "ESOL_Soluble%": 82.77511961722487,
+      "hERG_basic_amine%": 1.1961722488038278,
+      "CYP3A4_azole%": 0.0,
+      "CYP3A4_thiophene%": 0.0,
+      "Pgp_amphiphile%": 0.0,
+      "flat_polyaromatic%": 0.0
+    },
+    "stage6_routes": {
+      "RouteFeasible%": 0.0,
+      "MeanRouteSteps": 0.0,
+      "AlreadyBuildingBlock%": 0.0,
+      "TrainRouteFeasible%": 0.7371007371007371,
+      "RouteFeasibleRatio%": 0.0
+    }
+  },
+  "metrics": {
+    "n_total": 418,
+    "n_valid": 418,
+    "n_3d": 418.0,
+    "NonSingleFrac": 0.0,
+    "AromaticFrac": 0.0,
+    "MeanBondOrder": 1.0,
+    "StereocentresPerMol": 0.5358851674641149,
+    "StereoDefinedFrac": 0.9633572567783094,
+    "Perception%": 0.9569377990430622,
+    "StereoReadback%": 100.0,
+    "MeanBondStrainPct": 14.978899713127031,
+    "MaxBondStrainPct": 97.1115648736341,
+    "MeanStrainKcal": 987.3975572749132,
+    "SAComplexity": 5.278133971291867,
+    "PAINSFree%": 100.0,
+    "InDomain%": 0.0,
+    "MeanMaxTanimoto": 0.1299445824226226,
+    "PctBeyond40": 0.0,
+    "PctBeyond60": 0.0,
+    "ESOL_logS": -2.73278596339713,
+    "ESOL_Soluble%": 82.77511961722487,
+    "hERG_basic_amine%": 1.1961722488038278,
+    "CYP3A4_azole%": 0.0,
+    "CYP3A4_thiophene%": 0.0,
+    "Pgp_amphiphile%": 0.0,
+    "flat_polyaromatic%": 0.0,
+    "RouteFeasible%": 0.0,
+    "MeanRouteSteps": 0.0,
+    "AlreadyBuildingBlock%": 0.0,
+    "TrainRouteFeasible%": 0.7371007371007371,
+    "RouteFeasibleRatio%": 0.0
+  },
+  "criteria": {
+    "perception": {
+      "metric": "Perception%",
+      "op": ">=",
+      "threshold": 95.0,
+      "why": "bond-order perception must succeed on essentially every 3D sample; a failure means the structure cannot be drawn unambiguously"
+    },
+    "geometry": {
+      "metric": "MeanBondStrainPct",
+      "op": "<=",
+      "threshold": 15.0,
+      "why": "mean |measured - ideal| bond length within 15% of the covalent norm (loose first-pass floor for distance-built geometry)"
+    },
+    "pains": {
+      "metric": "PAINSFree%",
+      "op": ">=",
+      "threshold": 95.0,
+      "why": "PAINS alerts are assay artifacts; a model that rediscovers them optimises against interference, not activity"
+    },
+    "in_domain": {
+      "metric": "InDomain%",
+      "op": ">=",
+      "threshold": 80.0,
+      "why": "most candidates should sit inside the applicability domain; beyond it, learned oracles (BBB%, QED, ESOL) extrapolate"
+    },
+    "soluble": {
+      "metric": "ESOL_Soluble%",
+      "op": ">=",
+      "threshold": 60.0,
+      "why": "majority should clear the conventional logS >= -4 mol/L aqueous-solubility floor"
+    },
+    "routes": {
+      "metric": "RouteFeasibleRatio%",
+      "op": ">=",
+      "threshold": 50.0,
+      "why": "at least half the routability that REAL training compounds achieve under the identical bounded search \u2014 absolute 2-step rates are dataset-specific (BBBP-like space: ~1% even for purchasable drugs; QM9-size: near 100%), so an absolute threshold would fail real chemistry"
+    }
+  },
+  "verdicts": {
+    "perception": {
+      "metric": "Perception%",
+      "value": 0.9569377990430622,
+      "op": ">=",
+      "threshold": 95.0,
+      "status": "FAIL",
+      "detail": "",
+      "why": "bond-order perception must succeed on essentially every 3D sample; a failure means the structure cannot be drawn unambiguously"
+    },
+    "geometry": {
+      "metric": "MeanBondStrainPct",
+      "value": 14.978899713127031,
+      "op": "<=",
+      "threshold": 15.0,
+      "status": "PASS",
+      "detail": "",
+      "why": "mean |measured - ideal| bond length within 15% of the covalent norm (loose first-pass floor for distance-built geometry)"
+    },
+    "pains": {
+      "metric": "PAINSFree%",
+      "value": 100.0,
+      "op": ">=",
+      "threshold": 95.0,
+      "status": "PASS",
+      "detail": "",
+      "why": "PAINS alerts are assay artifacts; a model that rediscovers them optimises against interference, not activity"
+    },
+    "in_domain": {
+      "metric": "InDomain%",
+      "value": 0.0,
+      "op": ">=",
+      "threshold": 80.0,
+      "status": "FAIL",
+      "detail": "",
+      "why": "most candidates should sit inside the applicability domain; beyond it, learned oracles (BBB%, QED, ESOL) extrapolate"
+    },
+    "soluble": {
+      "metric": "ESOL_Soluble%",
+      "value": 82.77511961722487,
+      "op": ">=",
+      "threshold": 60.0,
+      "status": "PASS",
+      "detail": "",
+      "why": "majority should clear the conventional logS >= -4 mol/L aqueous-solubility floor"
+    },
+    "routes": {
+      "metric": "RouteFeasibleRatio%",
+      "value": 0.0,
+      "op": ">=",
+      "threshold": 50.0,
+      "status": "FAIL",
+      "detail": "",
+      "why": "at least half the routability that REAL training compounds achieve under the identical bounded search \u2014 absolute 2-step rates are dataset-specific (BBBP-like space: ~1% even for purchasable drugs; QM9-size: near 100%), so an absolute threshold would fail real chemistry"
+    }
+  },
+  "overall": "FAIL",
+  "source": "outputs/eval_bbb_geofix_final/molecules.sdf",
+  "config": "configs/central_bbb_geofix.yaml"
+}

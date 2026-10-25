@@ -1,0 +1,277 @@
+$ /home/sahil/Desktop/3D-Molecule-Diffusion/.venv/bin/python /home/sahil/Desktop/3D-Molecule-Diffusion/train.py --config /home/sahil/Desktop/3D-Molecule-Diffusion/outputs/ablation_no_3d/seed_42/config.yaml
+
+/home/sahil/Desktop/3D-Molecule-Diffusion/.venv/lib/python3.12/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+[01:11:27] Explicit valence for atom # 1 N, 4, is greater than permitted
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] Explicit valence for atom # 6 N, 4, is greater than permitted
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] Explicit valence for atom # 6 N, 4, is greater than permitted
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] Explicit valence for atom # 11 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 12 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] Explicit valence for atom # 5 N, 4, is greater than permitted
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+[01:11:27] WARNING: not removing hydrogen atom without neighbors
+Training on: cpu
+  ! flatten_to_2d: z-coordinate zeroed for train/val/test
+SMILES->3D [bbbp]: 0it [00:00, ?it/s]SMILES->3D [bbbp]: 0it [00:00, ?it/s]
+Dataset split — train: 1628, val: 205, test: 205
+Running epochs 1..200 (total 200)
+  ! mapping 36 exotic atoms (Z>=10) to carbon; consider higher model.num_types for full fidelity
+Epoch    1 | train_pos=6.5314  train_type=2.5453  baseline=1.0000 | val_pos=2.5577  val_type=1.3281  val=3.2218 | lr=3.00e-04
+  ✓ Saved best model (val_loss=3.2218)
+Epoch    2 | train_pos=728.3556  train_type=1.1264  baseline=1.0000 | val_pos=5513502294433333248.0000  val_type=4464.2746  val=5513502294433335296.0000 | lr=3.00e-04
+Epoch    3 | train_pos=332534048398731.7500  train_type=71.6297  baseline=1.0000 | val_pos=233152346667482087424.0000  val_type=9559.5811  val=233152346667482087424.0000 | lr=3.00e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch    4 | train_pos=104598566840604101599326896128.0000  train_type=802639.8043  baseline=0.3462 | val_pos=nan  val_type=nan  val=nan | lr=3.00e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch    5 | train_pos=0.6275  train_type=0.3135  baseline=0.2308 | val_pos=nan  val_type=33706123854505179330551423696896.0000  val=nan | lr=3.00e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped[01:13:26] Explicit valence for atom # 0 N, 4, is greater than permitted
+[01:13:26] Explicit valence for atom # 4 H, 2, is greater than permitted
+[01:13:26] Explicit valence for atom # 5 H, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 0 H, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 7 H, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 0 C, 5, is greater than permitted
+[01:13:26] Explicit valence for atom # 9 H, 4, is greater than permitted
+[01:13:26] Explicit valence for atom # 0 O, 12, is greater than permitted
+[01:13:26] Explicit valence for atom # 6 H, 2, is greater than permitted
+[01:13:26] Explicit valence for atom # 3 H, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 12 H, 2, is greater than permitted
+[01:13:26] Explicit valence for atom # 15 O, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 2 O, 6, is greater than permitted
+[01:13:26] Explicit valence for atom # 0 O, 3, is greater than permitted
+[01:13:26] Explicit valence for atom # 5 C, 11, is greater than permitted
+
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch    6 | train_pos=276328737316829429760.0000  train_type=2860.1065  baseline=0.1923 | val_pos=nan  val_type=nan  val=nan | lr=2.99e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch    7 | train_pos=7711141198.5769  train_type=0.6271  baseline=0.0769 | val_pos=nan  val_type=nan  val=nan | lr=2.99e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch    8 | train_pos=365088473088.5421  train_type=1.3649  baseline=0.3846 | val_pos=2.9667  val_type=1.2108  val=3.5721 | lr=2.99e-04
+Epoch    9 | train_pos=24373672183045733334118301696.0000  train_type=409917.6680  baseline=1.0000 | val_pos=1.7773  val_type=1.0171  val=2.2859 | lr=2.99e-04
+  ✓ Saved best model (val_loss=2.2859)
+Epoch   10 | train_pos=265060.8307  train_type=1.1657  baseline=1.0000 | val_pos=2.5215  val_type=0.9796  val=3.0113 | lr=2.98e-04 | quick_valid=6.2%
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch   11 | train_pos=21957126911955460.0000  train_type=16.0813  baseline=0.9615 | val_pos=1.5432  val_type=0.9213  val=2.0038 | lr=2.98e-04
+  ✓ Saved best model (val_loss=2.0038)
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch   12 | train_pos=1.6463  train_type=0.8958  baseline=0.9615 | val_pos=2.8633  val_type=0.9175  val=3.3221 | lr=2.97e-04
+Epoch   13 | train_pos=706.2823  train_type=0.9365  baseline=1.0000 | val_pos=inf  val_type=761162872802351513600.0000  val=inf | lr=2.97e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped[01:15:19] Explicit valence for atom # 0 O, 3, is greater than permitted
+[01:15:19] Explicit valence for atom # 0 F, 4, is greater than permitted
+[01:15:19] Explicit valence for atom # 0 H, 2, is greater than permitted
+[01:15:19] Explicit valence for atom # 0 H, 3, is greater than permitted
+[01:15:19] Explicit valence for atom # 4 H, 2, is greater than permitted
+[01:15:19] Explicit valence for atom # 6 H, 4, is greater than permitted
+[01:15:19] Explicit valence for atom # 3 H, 3, is greater than permitted
+[01:15:19] Explicit valence for atom # 6 H, 2, is greater than permitted
+[01:15:19] Explicit valence for atom # 2 C, 5, is greater than permitted
+[01:15:19] Explicit valence for atom # 1 H, 2, is greater than permitted
+[01:15:19] Explicit valence for atom # 0 H, 4, is greater than permitted
+[01:15:19] Explicit valence for atom # 3 H, 5, is greater than permitted
+[01:15:19] Explicit valence for atom # 0 H, 4, is greater than permitted
+[01:15:19] Explicit valence for atom # 13 H, 2, is greater than permitted
+[01:15:19] Explicit valence for atom # 10 H, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 11 H, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 5 F, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 2 O, 4, is greater than permitted
+[01:17:05] Explicit valence for atom # 1 H, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 0 C, 5, is greater than permitted
+[01:17:05] Explicit valence for atom # 0 H, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 6 H, 2, is greater than permitted
+[01:17:05] Explicit valence for atom # 0 H, 3, is greater than permitted
+[01:17:05] Explicit valence for atom # 1 N, 16, is greater than permitted
+[01:17:05] Explicit valence for atom # 12 F, 3, is greater than permitted
+[01:18:47] Explicit valence for atom # 6 O, 3, is greater than permitted
+[01:18:47] Explicit valence for atom # 12 F, 2, is greater than permitted
+[01:18:47] Explicit valence for atom # 7 H, 2, is greater than permitted
+
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch   14 | train_pos=139396089496468859771011727360.0000  train_type=1678754.3161  baseline=0.5000 | val_pos=inf  val_type=11252298753.2673  val=inf | lr=2.96e-04
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch   15 | train_pos=3299047424902218752.0000  train_type=167.2228  baseline=0.8846 | val_pos=432468393984.9403  val_type=3.5488  val=432468393986.7147 | lr=2.96e-04
+Epoch   16 | train_pos=1.7638  train_type=0.9248  baseline=1.0000 | val_pos=1.9594  val_type=0.9366  val=2.4277 | lr=2.95e-04
+Epoch   17 | train_pos=411478888268.1713  train_type=1.2727  baseline=1.0000 | val_pos=1.0813  val_type=0.9181  val=1.5404 | lr=2.95e-04
+  ✓ Saved best model (val_loss=1.5404)
+Epoch   18 | train_pos=1.4504  train_type=0.9290  baseline=1.0000 | val_pos=1.0705  val_type=0.9104  val=1.5257 | lr=2.94e-04
+  ✓ Saved best model (val_loss=1.5257)
+  ! non-finite grads in [embed.weight, time_proj.0.weight, time_proj.0.bias, time_proj.2.weight, time_proj.2.bias…] — batch skipped
+Epoch   19 | train_pos=1.5461  train_type=0.8588  baseline=0.9615 | val_pos=1.1096  val_type=0.8729  val=1.5460 | lr=2.93e-04
+Epoch   20 | train_pos=1.7151  train_type=0.9034  baseline=1.0000 | val_pos=1.8573  val_type=0.8890  val=2.3018 | lr=2.93e-04 | quick_valid=6.2%
+Epoch   21 | train_pos=1.6835  train_type=0.9180  baseline=1.0000 | val_pos=1.3161  val_type=0.8671  val=1.7497 | lr=2.92e-04
+Epoch   22 | train_pos=1.4570  train_type=0.9236  baseline=1.0000 | val_pos=2.1922  val_type=0.9007  val=2.6426 | lr=2.91e-04
+Epoch   23 | train_pos=1.5601  train_type=0.8953  baseline=1.0000 | val_pos=1.3203  val_type=0.8786  val=1.7596 | lr=2.90e-04
+Epoch   24 | train_pos=1.6019  train_type=0.8854  baseline=1.0000 | val_pos=1.2612  val_type=0.8722  val=1.6973 | lr=2.89e-04
+Epoch   25 | train_pos=87.9257  train_type=0.8903  baseline=1.0000 | val_pos=2.1887  val_type=0.8758  val=2.6265 | lr=2.89e-04
+Epoch   26 | train_pos=1.4147  train_type=0.8686  baseline=1.0000 | val_pos=0.9521  val_type=0.8579  val=1.3811 | lr=2.88e-04
+  ✓ Saved best model (val_loss=1.3811)
+Epoch   27 | train_pos=1.6357  train_type=0.8543  baseline=1.0000 | val_pos=1.0787  val_type=0.9005  val=1.5289 | lr=2.87e-04
+Epoch   28 | train_pos=1.2314  train_type=0.8788  baseline=1.0000 | val_pos=1.4276  val_type=0.9067  val=1.8809 | lr=2.86e-04
+Epoch   29 | train_pos=1.5594  train_type=0.9078  baseline=1.0000 | val_pos=1.7870  val_type=0.8794  val=2.2267 | lr=2.85e-04
+Epoch   30 | train_pos=1.4886  train_type=0.9246  baseline=1.0000 | val_pos=1.4326  val_type=0.8655  val=1.8654 | lr=2.84e-04 | quick_valid=37.5%
+Epoch   31 | train_pos=1.5408  train_type=0.8996  baseline=1.0000 | val_pos=1.6209  val_type=0.8987  val=2.0703 | lr=2.83e-04
+Epoch   32 | train_pos=1.7382  train_type=0.8910  baseline=1.0000 | val_pos=2.8336  val_type=0.8861  val=3.2767 | lr=2.81e-04
+Epoch   33 | train_pos=1.6876  train_type=0.8850  baseline=1.0000 | val_pos=2.9845  val_type=0.8624  val=3.4157 | lr=2.80e-04
+Epoch   34 | train_pos=1.3365  train_type=0.8768  baseline=1.0000 | val_pos=1.7461  val_type=0.8161  val=2.1542 | lr=2.79e-04
+Epoch   35 | train_pos=1.3082  train_type=0.9079  baseline=1.0000 | val_pos=1.7374  val_type=0.8700  val=2.1724 | lr=2.78e-04
+Epoch   36 | train_pos=1.4667  train_type=0.9323  baseline=1.0000 | val_pos=2.0240  val_type=0.8755  val=2.4618 | lr=2.77e-04
+Epoch   37 | train_pos=1.5037  train_type=0.8728  baseline=1.0000 | val_pos=1.3071  val_type=0.8188  val=1.7165 | lr=2.75e-04
+Epoch   38 | train_pos=1.4240  train_type=0.8734  baseline=1.0000 | val_pos=1.2741  val_type=0.8394  val=1.6938 | lr=2.74e-04
+Epoch   39 | train_pos=740743372135565363787659294539776.0000  train_type=307237624.8404  baseline=1.0000 | val_pos=1.2552  val_type=0.9152  val=1.7128 | lr=2.73e-04
+Epoch   40 | train_pos=1.7987  train_type=0.8462  baseline=1.0000 | val_pos=1.4663  val_type=0.8188  val=1.8757 | lr=2.71e-04 | quick_valid=81.2%
+Epoch   41 | train_pos=1.7111  train_type=0.8406  baseline=1.0000 | val_pos=1.8318  val_type=0.8028  val=2.2332 | lr=2.70e-04
+Epoch   42 | train_pos=1.3700  train_type=0.8690  baseline=1.0000 | val_pos=1.8204  val_type=0.8681  val=2.2544 | lr=2.69e-04
+Epoch   43 | train_pos=1.8513  train_type=0.8553  baseline=1.0000 | val_pos=2.8664  val_type=0.7947  val=3.2638 | lr=2.67e-04
+Epoch   44 | train_pos=1.6263  train_type=0.8433  baseline=1.0000 | val_pos=1.8674  val_type=0.8033  val=2.2690 | lr=2.66e-04
+Epoch   45 | train_pos=1.5823  train_type=0.8625  baseline=1.0000 | val_pos=1.2379  val_type=0.8748  val=1.6753 | lr=2.64e-04
+Epoch   46 | train_pos=1.3695  train_type=0.8761  baseline=1.0000 | val_pos=1.9494  val_type=0.8217  val=2.3602 | lr=2.63e-04
+Early stopping at epoch 46 (patience=20)
+
+--- Test evaluation ---
+Test pos_loss=1.0628  test_type_loss=0.9202  test_loss=1.5230

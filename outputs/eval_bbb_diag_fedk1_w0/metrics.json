@@ -1,0 +1,32 @@
+{
+  "metrics": {
+    "Validity": 84.5,
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.6714609301911993,
+    "QED": 0.5413112098269428,
+    "LogP": 1.7081566863905329,
+    "SNN": 0.07277401808906696,
+    "BBB%": 0.0,
+    "ScaffDiv": 0.13609467455621302,
+    "ScaffCov": 0.08333333333333333,
+    "Lipinski%": 81.06508875739645,
+    "Veber%": 37.8698224852071,
+    "CNS_MPO": 2.791207738799662,
+    "ConnectedValidity": 0.0,
+    "BondsPerMol": 9.254437869822485,
+    "ConnectedFrac": 0.0
+  },
+  "latex_row": "84.5000  & 100.0000  & 100.0000  & 0.6715  & 0.5413  & 1.7082  & 0.0728  & 0.0000  & 0.1361  & 0.0833  & 81.0651  & 37.8698  & 2.7912  & 0.0000  & 9.2544  & 0.0000 \\\\",
+  "num_valid": 169,
+  "num_total": 200,
+  "run": {
+    "checkpoint": "outputs/sweep_K_mode/numclients1_modeiid/seed_456/best_global.pt",
+    "num_samples": 200,
+    "ddim_steps": 200,
+    "eta": 1.0,
+    "seed": 42,
+    "step_schedule": "quadratic",
+    "relax": false
+  }
+}

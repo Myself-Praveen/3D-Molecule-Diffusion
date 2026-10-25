@@ -84,7 +84,7 @@ With the BBB oracle available:
 The honest current status is in `progress.md`. The short version:
 
 - **QM9 central** runs reproduce connected molecules at non-trivial rates (the V4-eps arm hits ~54% ConnV), and the eval tooling is now calibrated on QM9 ground truth.
-- **BBB central** at full budget (200k steps) produces a genuine denoiser that beats the trivial predictor at every timestep, but sampled geometry is still over-bonded atom soup: ~2% connected, ~32 bonds/mol vs ~19 real. Conditioning steers BBB% (up to ~58% at high guidance) but never fixes connectivity.
+- **BBB central** at full budget (200k steps) produces a genuine denoiser that beats the trivial predictor at every timestep, but sampled geometry is still over-bonded atom soup: ~1.5% connected, ~33 bonds/mol. Conditioning steers BBB% (up to ~58% at high guidance) but never fixes connectivity. The V5 retrain improves that to **8.75% connected (9.0% at n=1000)**, and test-time steric guidance takes it to **14.0%** while keeping validity at 51.5% — see `progress.md` §17 and `--steric_weight`. The samples are still fragmented (~5 per molecule) and over-bonded against real BBBP on the same ruler (37 vs 26.9 bonds), so `rl.enabled` stays off.
 - Objective-side ablations (λ₂ renormalization, geofix shape supervision) did **not** fix connectivity and are recorded as negatives.
 - The current working hypothesis is geometric (sampler + checkpoint selection), and the V5 BBB retrain (V4-eps architecture on BBBP) is the next structure-level attempt.
 

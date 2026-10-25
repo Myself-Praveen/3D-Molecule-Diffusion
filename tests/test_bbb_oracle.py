@@ -79,6 +79,51 @@ class TestOracleAPI:
         assert 0.0 <= out[0] <= 1.0
 
 
+class TestIsolatedAtomBatching:
+    """A graph whose highest-index atom has no edge must not shift the batch.
+
+    PyG infers ``num_nodes`` as ``edge_index.max() + 1``, so an isolated last
+    atom silently shrinks that graph. Collating then makes ``z`` and ``batch``
+    disagree and ``global_mean_pool`` raises — and ``predict_batch``'s blanket
+    ``except`` reported the whole cohort as BBB-negative (progress.md §17).
+    """
+
+    @staticmethod
+    def _with_isolated_atom():
+        from torch_geometric.data import Data
+
+        # Atoms 0 and 1 are bonded by distance; atom 2 sits far away.
+        pos = torch.tensor([[0.0, 0.0, 0.0], [1.4, 0.0, 0.0], [20.0, 0.0, 0.0]])
+        z = torch.tensor([6, 6, 6], dtype=torch.long)
+        return BBBClassifier.data_to_input(Data(pos=pos, z=z))
+
+    def test_num_nodes_is_explicit(self):
+        item = self._with_isolated_atom()
+        assert item is not None
+        assert item.num_nodes == 3
+
+    def test_batch_vectors_stay_aligned(self):
+        from torch_geometric.data import Batch
+
+        items = [self._with_isolated_atom(), self._with_isolated_atom()]
+        batch = Batch.from_data_list(items)
+        assert batch.z.numel() == 6
+        assert batch.batch.numel() == 6
+        assert int(batch.batch.max()) + 1 == 2
+        logits = _untrained()(batch.z, batch.edge_index, batch.batch)
+        assert logits.shape == (2,)
+
+    def test_predict_batch_survives_isolated_atom_molecule(self):
+        """The real path: a molecule whose ETKDG conformer has a lone atom."""
+        clf = _untrained()
+        loner = Chem.AddHs(Chem.MolFromSmiles("[Cl-]"))
+        from rdkit.Chem import AllChem
+
+        assert AllChem.EmbedMolecule(loner, randomSeed=42) == 0
+        out = clf.predict_batch([Chem.MolFromSmiles(CAFFEINE), loner])
+        assert len(out) == 2 and all(0.0 <= p <= 1.0 for p in out)
+
+
 class TestTrainedOracle:
     def test_known_bbb_positive(self):
         clf = _trained()

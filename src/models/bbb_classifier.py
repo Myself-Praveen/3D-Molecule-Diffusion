@@ -13,6 +13,8 @@ not 3D conformations, which is exactly what drug-discovery BBB oracles do.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import torch
 from rdkit import Chem
@@ -89,9 +91,17 @@ class BBBClassifier(nn.Module):
             lut = torch.tensor(
                 [Z_TO_INDEX.get(i, 1) for i in range(64)], dtype=torch.long,
             )
+            # ``num_nodes`` must be explicit: a molecule with *no* distance-gated
+            # edges has ``edge_index`` of shape (2, 0), from which PyG infers
+            # zero nodes and then offsets the next graph's ``batch`` vector by
+            # one — the collated ``z`` and ``batch`` then disagree by exactly
+            # that many atoms and ``global_mean_pool`` raises. The blanket
+            # try/except in ``predict_batch`` turned that into a silent BBB% of
+            # 0.0 for the whole cohort (progress.md section 17).
             return Data(
                 z=lut[z],
                 edge_index=bbb_topology_edges(data.pos),
+                num_nodes=int(z.numel()),
             )
         except Exception:
             return None
@@ -158,9 +168,27 @@ class BBBClassifier(nn.Module):
             if not valid_idx:
                 return out
             device = next(self.parameters()).device
-            batch = Batch.from_data_list([items[i] for i in valid_idx]).to(device)
-            logits = self(batch.z, batch.edge_index, batch.batch)
-            probs = torch.sigmoid(logits).tolist()
+            try:
+                batch = Batch.from_data_list(
+                    [items[i] for i in valid_idx]).to(device)
+                logits = self(batch.z, batch.edge_index, batch.batch)
+                probs = torch.sigmoid(logits).tolist()
+            except Exception as exc:
+                # Never silently report a whole cohort as BBB-negative: fall
+                # back to per-molecule scoring so one malformed graph cannot
+                # zero every prediction (the section-17 incident).
+                warnings.warn(
+                    f"batched BBB scoring failed ({exc}); scoring per molecule",
+                    RuntimeWarning, stacklevel=2,
+                )
+                probs = []
+                for i in valid_idx:
+                    d = items[i]
+                    logit = self(
+                        d.z.to(device), d.edge_index.to(device),
+                        torch.zeros(d.z.numel(), dtype=torch.long, device=device),
+                    )
+                    probs.append(float(torch.sigmoid(logit).item()))
             for i, p in zip(valid_idx, probs):
                 out[i] = float(p)
             return out

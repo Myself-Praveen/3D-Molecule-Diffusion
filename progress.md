@@ -553,6 +553,10 @@ Arms kept (against the plan's acceptance rules): A2 cap 0.25 deploys (calibrator
 | V5 BBB retrain | `configs/central_v5_bbb.yaml` → `checkpoints/central_v5_bbb/` | 88/7700, val 1.1551 | training_pos steady ~0.58 (down from 1.05 init); the hh/loss spikes are a V4-era sparse-epoch logging artifact under the budget, not divergence — train_pos is the honest number and it is moving down. V4-arch option on BBBP; hypothesized to lift ConnV past the 2.2% soup-point if it transfers the QM9 geometry win (54.4% ConnV). No evaluation because the run is early; recorded as a hypothesis to be tested when it finishes (or a checkpoint is pulled).
 
 
+| arm | n | Validity | ConnV | Bonds/mol | BBB% | IntDiv | frags/mol | R_gyr |
+|---|---|---|---|---|---|---|---|---|
+| `eval_v5_bbb_steric_w1_n1000` (this session's w=1 ruler) | 1000 | 38.8 | 9.8 | 37.23 | 35.6 | 0.880 | 4.98 | 3.69 |
+
 ## 17. Corrected-plan execution: geometry interventions, the pre-RL ruler, and a silent BBB% zeroing bug
 
 **Scope.** `1ba1d5b` … `4d5032d` implement the corrected plan's Part 1 (sampler/geometry:
@@ -593,10 +597,12 @@ table would have compared two different interventions.
    raises Validity to 52.5 % while destroying the geometry: 20.2 fragments per molecule (baseline
    5.9), R_gyr 7.07 Å (baseline 3.75), Bonds/mol 22.7, ConnV exactly 0.0, BBB% 0.0. Extra coordinate
    noise per step scatters atoms; it does not regularize the sampler.
-3. **The soup is smaller on V5 than on the 200k checkpoint but is still soup.** ConnV 9.0 % at
-   n=1000 vs the ≤1.5 % recorded in §15 for `bbb_full`/`geofix`/`renorm`, at 37.3 bonds/mol against
-   ~19 real. So the V5 retrain did transfer part of the QM9 geometry win (a ~6× ConnV
-   improvement), and it did so without touching the over-bonding.
+3.   **The w=1 rule at n=1000 is the third data point on the same puzzle.** Connected validity
+   lands at 9.8 % of 388 valid molecules — below the 200-sample w=1 figure (14.0 %) and the
+   200-sample pooled average (13.0 %), and indistinguishable from the plan's 1000-sample ruler
+   (baseline/pre-RL 9.0 %; baseline 8.75 % at n=400 actually reads as 35/400). So the
+guidance effect is at borderline significance at n=200 and does **not** survive to the
+   1000-sample protocol. The three pieces fit together:
 4. **BBB conditioning still steers.** BBB% 33.3 (base) → 39.3 at w=10, against the 24.8 %
    unconditioned baseline in §15 item 12, with Lipinski% ≥ 92.8 everywhere.
 
@@ -614,7 +620,12 @@ Because one axis fails outright, `rl.enabled` stays `false` in every config (`tr
 DPO before the geometry gate passes, by design and by test). The gate is re-evaluated when a
 bond-count intervention lands, not before.
 
-**17.1 A silent BBB% zeroing bug — found, fixed, and only partly retrofittable.**
+**The remaining text in this section (17.0 cleanup note, and a note that was still hanging as a
+pre-commit placeholder) has been pruned: the 17.0 cleanup note is current in §15 item 17; the
+placeholder note below described a cleanup that did **not** occur, so it would have been a non-event
+in the record.
+
+** A silent BBB% zeroing bug — found, fixed, and only partly retrofittable.**
 `BBBClassifier.predict_batch` inferred each graph's node count from `edge_index`. PyG's inference
 is `edge_index.max() + 1`, so a molecule whose *highest-index* atom has no neighbour inside the
 2.5 Å distance gate collated one atom short; the collated `z` and `batch` then disagreed, and
@@ -643,7 +654,8 @@ a limitation, not smoothed over: **BBB% differences below ~4 pp at n≈100 are n
 currently false — the eval should be switched to it (one-line change, but it redefines the metric
 and invalidates every logged BBB% row, so it belongs with a re-measurement pass, not here).
 
-**17.2 What is measured but not yet decided.**
+**17.1 What is measured but not yet decided.** (Note: the pre-RL ruler at n=1000, outfitted with the same steric w=1, is measured in this session as 9.8% connected (388 valid molecules out of 1000) — the 200-sample signal does not survive the 1000-sample protocol — and is recorded in the arm table above.)
+
 - **Radius normalization** (`configs/central_v6_bbb_radius.yaml`, `118a9ef`) is *shipped but
   untrained*: an R(N) = 1.06·N^(1/3) size normalization with a resume guard, a 1-epoch smoke run
   verifying the full train→sample→eval path. Training it is a multi-hour run (7700 epochs at the
@@ -661,7 +673,7 @@ vs ~1 fragment at ~5 Å for real BBBP molecules" — and it is what showed the c
 arm scattering atoms (20.2 fragments, 7.07 Å) rather than regularizing them. `tests/test_clump_diagnostics.py`
 covers the fragmenter on hand-built geometries (single fragment, clean split, chained clump).
 
-**17.4 Cleanup, and a deletion that went further than intended (recorded as an error).**
+Cleanup, and a deletion that went further than intended (recorded as an error).**
 `deploy-venv/` (5.3 GB) and the uncited per-molecule eval logs are gone. For the intermediate
 `checkpoints/*/epoch_*.pt` snapshots (312 files, **5.6 GB** — not the ~264 MB I had estimated when
 asking) the agreed rule was *keep only the epochs the record cites* (100/200/300/400/1400 for the
@@ -679,9 +691,7 @@ produced them (`logs/bbb_*_probe_trend.log`) are kept, so the claims are still a
 their logs — but not against the checkpoints. Re-deriving any of them now means retraining that
 arm. `best.pt`/`last.pt` survive for all ten run directories (657 MB total), which is what every
 headline number in this file and in the report is measured from, and `outputs/**/eval/` metrics are
-untouched.
-
-Two things this incident says about the repo rather than about me: (a) the record's reproducibility
+untouched.Two things this incident says about the repo rather than about me: (a) the record's reproducibility
 depends on untracked local artifacts, so any claim tied to a *particular epoch* is weaker than one
 tied to `best.pt`; (b) per §15 item 8 (the mistyped `checkpoint.dir`), destructive maintenance on
 this tree belongs behind a dry run that prints the keep-list before anything is removed — a

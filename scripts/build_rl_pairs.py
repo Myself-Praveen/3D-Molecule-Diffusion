@@ -53,6 +53,14 @@ from src.rl.preference_pairs import (  # noqa: E402
 )
 from src.rl.rewards import REFERENCE_BONDS_PER_MOL, load_bbb_oracle  # noqa: E402
 from src.utils.evaluation import coords_and_types_to_mol  # noqa: E402
+from src.guidance import (
+    DEFAULT_VALENCE_COVALENT_FACTOR,
+    DEFAULT_VALENCE_K_VAL,
+    DEFAULT_VALENCE_MAX_STEP,
+    DEFAULT_VALENCE_TAU,
+    valence_guidance,
+    valence_guidance_weight,
+)  # noqa: E402
 
 
 def _load(args) -> tuple[EquivariantGenerator, dict, dict, CenteredDDPM, TypeDDPM]:
@@ -142,7 +150,19 @@ def main() -> int:
                         help="Skip the BBB term (no models/bbb_oracle.pt)")
     parser.add_argument("--device", default=None)
     parser.add_argument("--out", default="outputs/rl_pairs/pairs.pt")
+    parser.add_argument("--valence_weight", type=float, default=0.0,
+                        help="Peak test-time valence guidance weight on the clean x0 estimate for both rollouts (0 = off; overrides --valence_enabled)")
+    parser.add_argument("--valence_enabled", action="store_true",
+                        help="Turn on test-time valence guidance for pair rollouts at the default peak weight 0.5")
+    parser.add_argument("--valence_start_frac", type=float, default=0.7)
+    parser.add_argument("--valence_tau", type=float, default=0.05)
+    parser.add_argument("--valence_covalent_factor", type=float, default=1.10)
+    parser.add_argument("--valence_k_val", type=float, default=1.0)
+    parser.add_argument("--valence_max_step", type=float, default=0.15)
     args = parser.parse_args()
+
+    out_path = Path(args.out)
+    out_path.mkdir(parents=True, exist_ok=True)
 
     target_bonds = (REFERENCE_BONDS_PER_MOL if args.target_bonds is None
                     else float(args.target_bonds))
@@ -158,6 +178,14 @@ def main() -> int:
     properties_mean = (_properties_mean(cfg, device)
                        if cond_enabled else None)
 
+    args.valence_weight = float(args.valence_weight)
+    if args.valence_weight <= 0.0 and args.valence_enabled:
+        args.valence_weight = 0.5
+    args.valence_start_frac = float(args.valence_start_frac)
+    args.valence_tau = float(args.valence_tau)
+    args.valence_covalent_factor = float(args.valence_covalent_factor)
+    args.valence_k_val = float(args.valence_k_val)
+    args.valence_max_step = float(args.valence_max_step)
     rng = np.random.default_rng(args.seed)
     from src.dataset_bbb import load_bbbp
 
@@ -174,6 +202,14 @@ def main() -> int:
             torch.tensor(counts, dtype=torch.long),
             device=device, ddim_steps=args.ddim_steps, eta=args.eta,
             step_schedule=args.step_schedule,
+            steric_weight=0.0,
+            valence_weight=args.valence_weight,
+            valence_start_frac=args.valence_start_frac,
+            valence_tau=args.valence_tau,
+            valence_covalent_factor=args.valence_covalent_factor,
+            valence_k_val=args.valence_k_val,
+            valence_max_step=args.valence_max_step,
+            valence_enabled=args.valence_enabled,
             cond=cond, guidance_scale=w if cond is not None else 0.0,
         )
 
@@ -199,9 +235,15 @@ def main() -> int:
             min_reward_gap=args.min_reward_gap, target_bonds=target_bonds,
         )
     else:
+    elif args.strategy == "valid_vs_invalid":
         pairs = generate_valid_vs_invalid_pairs(
             low_samples + high_samples, oracle, n_pairs=n,
             target_bonds=target_bonds,
+        )
+    else:
+        raise ValueError(
+            f"Unknown strategy={args.strategy!r} "
+            f"(expected 'seed_matched' or 'valid_vs_invalid')"
         )
 
     if not pairs:
@@ -215,6 +257,13 @@ def main() -> int:
     stats["mean_sample_reward_low_w"] = float(np.mean([
         sample_reward(s, oracle, target_bonds) for s in low_samples
     ]))
+    stats["valence_weight"] = args.valence_weight
+    stats["valence_enabled"] = bool(args.valence_enabled)
+    stats["valence_start_frac"] = args.valence_start_frac
+    stats["valence_tau"] = args.valence_tau
+    stats["valence_covalent_factor"] = args.valence_covalent_factor
+    stats["valence_k_val"] = args.valence_k_val
+    stats["valence_max_step"] = args.valence_max_step
     save_preference_pairs(args.out, {
         "pairs": [
             {

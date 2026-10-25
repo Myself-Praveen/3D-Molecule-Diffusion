@@ -85,9 +85,10 @@ def sample_molecules(
     valence_start_frac: float = 0.7,
     valence_tau: float = DEFAULT_VALENCE_TAU,
     valence_covalent_factor: float = DEFAULT_VALENCE_COVALENT_FACTOR,
-    valence_k_val: float = DEFAULT_VALENCE_K_VAL,        valence_max_step: float = DEFAULT_VALENCE_MAX_STEP,
-        valence_enabled: bool = False,
-        coord_temperature: float = 0.0,
+    valence_k_val: float = DEFAULT_VALENCE_K_VAL,
+    valence_max_step: float = DEFAULT_VALENCE_MAX_STEP,
+    valence_enabled: bool = False,
+    coord_temperature: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
 

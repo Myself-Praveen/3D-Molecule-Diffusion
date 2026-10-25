@@ -614,6 +614,8 @@ Future work: run the same guidance intervention at the 1000-sample budget of the
 
 References re-check: Holkar 2019 citation link was broken; fixed to https://arxiv.org/abs/2111.10193.
 
+Next step: open the graph debugger to understand why the model is not learning.
+
 [End of session record]
 
 (Recorded: this session's commits are 14ff05e, f7d0714, 52a06f9, 15e6ae7, 7e8549e, d6863ac, f23d520, 80a40eb.)

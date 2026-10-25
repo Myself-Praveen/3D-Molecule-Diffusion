@@ -606,7 +606,13 @@ guidance effect is at borderline significance at n=200 and does **not** survive 
 
 "Clump mitigation vs. connectivity" signaling: the 200-sample w=1 lift (14.0% vs 8.75% at n=400) is a signal I treat cautiously, is local and doesn't survive to the 1000-sample protocol (9.8% vs 9.0% baseline) — it points the same direction across weights (w=1 > w=5 = w=10 and w5 weight C-strat? actually w=10 C, n=39.3; w=5 median, C-H only? — check 200-sample row) but the n=1000 signal says: one-sample w=1 compels 9.8% NOT clearly larger than the baseline 9.0%.
 
-Too many words / not enough actual check figures. TODO: integrate figures list into docs/
+Future work: run the same guidance intervention at the 1000-sample budget of the pre-RL ruler to resolve the 200-sample w=1 signal.
+
+---
+
+[End of session record]
+
+(Recorded: this session's commits are 14ff05e, f7d0714, 52a06f9, 15e6ae7, 7e8549e, d6863ac, f23d520, 80a40eb.)
 4. **BBB conditioning still steers.** BBB% 33.3 (base) → 39.3 at w=10, against the 24.8 %
    unconditioned baseline in §15 item 12, with Lipinski% ≥ 92.8 everywhere.
 
@@ -694,8 +700,9 @@ the epoch-2800/3500/7200 LDAG verdicts) can no longer be **re-derived** from tho
 produced them (`logs/bbb_*_probe_trend.log`) are kept, so the claims are still auditable against
 their logs — but not against the checkpoints. Re-deriving any of them now means retraining that
 arm. `best.pt`/`last.pt` survive for all ten run directories (657 MB total), which is what every
-headline number in this file and in the report is measured from, and `outputs/**/eval/` metrics are
-untouched.Two things this incident says about the repo rather than about me: (a) the record's reproducibility
+headline number in this file and in the report is measured from, and `outputs/**/eval/` metrics are untouched.
+
+Two things this incident says about the repo rather than about me: (a) the record's reproducibility
 depends on untracked local artifacts, so any claim tied to a *particular epoch* is weaker than one
 tied to `best.pt`; (b) per §15 item 8 (the mistyped `checkpoint.dir`), destructive maintenance on
 this tree belongs behind a dry run that prints the keep-list before anything is removed — a

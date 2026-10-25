@@ -603,6 +603,10 @@ table would have compared two different interventions.
    (baseline/pre-RL 9.0 %; baseline 8.75 % at n=400 actually reads as 35/400). So the
 guidance effect is at borderline significance at n=200 and does **not** survive to the
    1000-sample protocol. The three pieces fit together:
+
+"Clump mitigation vs. connectivity" signaling: the 200-sample w=1 lift (14.0% vs 8.75% at n=400) is a signal I treat cautiously, is local and doesn't survive to the 1000-sample protocol (9.8% vs 9.0% baseline) — it points the same direction across weights (w=1 > w=5 = w=10 and w5 weight C-strat? actually w=10 C, n=39.3; w=5 median, C-H only? — check 200-sample row) but the n=1000 signal says: one-sample w=1 compels 9.8% NOT clearly larger than the baseline 9.0%.
+
+Too many words / not enough actual check figures. TODO: integrate figures list into docs/
 4. **BBB conditioning still steers.** BBB% 33.3 (base) → 39.3 at w=10, against the 24.8 %
    unconditioned baseline in §15 item 12, with Lipinski% ≥ 92.8 everywhere.
 

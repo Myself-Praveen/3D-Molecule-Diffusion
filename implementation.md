@@ -64,10 +64,11 @@ Files marked ★ are **new**, files marked ✎ are **modified**, unmarked files 
 
 ### 1.1 Data Sources
 
-| Dataset | Size | Labels | Source |
-|---|---|---|---|
-| **BBBP (MoleculeNet)** | 2,039 compounds | Binary (BBB+ / BBB−) | `ogb` or `deepchem` download |
-| **B3DB** | ~7,800 compounds | Binary + continuous logBB | CSV from [GitHub](https://github.com/theochem/B3DB) |
+
+| Dataset                | Size             | Labels                    | Source                                             |
+| ------------------------ | ------------------ | --------------------------- | ---------------------------------------------------- |
+| **BBBP (MoleculeNet)** | 2,039 compounds  | Binary (BBB+ / BBB−)     | `ogb` or `deepchem` download                       |
+| **B3DB**               | ~7,800 compounds | Binary + continuous logBB | CSV from[GitHub](https://github.com/theochem/B3DB) |
 
 We use **BBBP as the primary dataset** (standard benchmark, directly comparable to other papers) and **B3DB as the extended dataset** (larger, for robustness claims).
 
@@ -78,7 +79,7 @@ We use **BBBP as the primary dataset** (standard benchmark, directly comparable 
 
 def load_bbbp(root="data/bbbp", split="scaffold") -> tuple[Dataset, Dataset, Dataset]:
     """Load BBBP from MoleculeNet with scaffold split.
-    
+  
     Returns (train_dataset, val_dataset, test_dataset).
     Each item is a PyG Data object with:
         - data.pos:    (N, 3) float — 3D coordinates from RDKit embedding
@@ -93,7 +94,7 @@ def load_bbbp(root="data/bbbp", split="scaffold") -> tuple[Dataset, Dataset, Dat
 
 def smiles_to_3d_data(smiles: str, bbb_label: int) -> Data | None:
     """Convert a SMILES string to a PyG Data object with 3D coords.
-    
+  
     Pipeline:
     1. Chem.MolFromSmiles(smiles)
     2. Chem.AddHs(mol)
@@ -102,7 +103,7 @@ def smiles_to_3d_data(smiles: str, bbb_label: int) -> Data | None:
     5. Extract pos, z from mol.GetConformer()
     6. Compute properties: QED, LogP, tPSA, MW via RDKit Descriptors
     7. Return Data(pos=pos, z=z, y=label, qed=qed, logp=logp, ...)
-    
+  
     Returns None if embedding fails (some SMILES lack valid 3D conformers).
     """
 
@@ -164,10 +165,10 @@ Data(pos, z, y, qed, logp, tpsa, mw, smiles)
 
 ### 1.5 Verification
 
-- [ ] `load_bbbp()` returns train/val/test splits with correct sizes
-- [ ] Every `Data` object has `.pos`, `.z`, `.y`, `.qed`, `.logp` attributes
-- [ ] `pos` has realistic bond lengths (C–C ≈ 1.5 Å, C–H ≈ 1.1 Å)
-- [ ] BBB label distribution: approximately 75% BBB+ / 25% BBB− in BBBP
+- [ ]  `load_bbbp()` returns train/val/test splits with correct sizes
+- [ ]  Every `Data` object has `.pos`, `.z`, `.y`, `.qed`, `.logp` attributes
+- [ ]  `pos` has realistic bond lengths (C–C ≈ 1.5 Å, C–H ≈ 1.1 Å)
+- [ ]  BBB label distribution: approximately 75% BBB+ / 25% BBB− in BBBP
 
 ---
 
@@ -300,10 +301,10 @@ noise_pred, type_logits, node_h = self.model(
 
 ### 2.5 Verification
 
-- [ ] Unconditional mode (`cond_dim=0`): output identical to current model (regression test)
-- [ ] Conditional mode (`cond_dim=32`): forward pass runs without error
-- [ ] Label dropout: with `dropout_prob=1.0`, output matches unconditional mode
-- [ ] Guidance: with `guidance_scale=0.0`, output matches standard conditional
+- [ ]  Unconditional mode (`cond_dim=0`): output identical to current model (regression test)
+- [ ]  Conditional mode (`cond_dim=32`): forward pass runs without error
+- [ ]  Label dropout: with `dropout_prob=1.0`, output matches unconditional mode
+- [ ]  Guidance: with `guidance_scale=0.0`, output matches standard conditional
 
 ---
 
@@ -319,27 +320,27 @@ A lightweight GNN classifier trained on BBBP to score generated molecules:
 ```python
 class BBBClassifier(nn.Module):
     """3-layer GCN classifier for BBB permeability prediction.
-    
+  
     Architecture:
         atom_embedding(z) → GCN_1 → GCN_2 → GCN_3 → global_mean_pool → MLP → sigmoid
-    
+  
     Input: PyG Data with pos, z, edge_index
     Output: probability of BBB permeability (0–1)
     """
-    
+  
     def __init__(self, num_types=10, hidden_dim=128, num_layers=3):
         ...
-    
+  
     def forward(self, z, edge_index, batch) -> torch.Tensor:
         """Returns BBB+ probability per molecule."""
         ...
-    
+  
     @torch.no_grad()
     def predict_mol(self, mol: Chem.Mol) -> float:
         """Score a single RDKit Mol. Returns BBB+ probability."""
         # Convert mol → Data → forward pass
         ...
-    
+  
     @torch.no_grad()
     def predict_batch(self, mols: list[Chem.Mol]) -> list[float]:
         """Score a batch of RDKit Mols."""
@@ -366,9 +367,9 @@ Target: AUROC ≥ 0.90 on test set (literature baseline is ~0.92).
 
 ### 3.3 Verification
 
-- [ ] Classifier achieves AUROC ≥ 0.88 on BBBP test set (scaffold split)
-- [ ] `predict_mol()` returns a float in [0, 1] for any valid RDKit Mol
-- [ ] `predict_batch()` handles `None` entries gracefully (returns 0.0)
+- [ ]  Classifier achieves AUROC ≥ 0.88 on BBBP test set (scaffold split)
+- [ ]  `predict_mol()` returns a float in [0, 1] for any valid RDKit Mol
+- [ ]  `predict_batch()` handles `None` entries gracefully (returns 0.0)
 
 ---
 
@@ -405,7 +406,7 @@ def veber_pass_rate(mols: Sequence[Chem.Mol | None]) -> float:
 
 def cns_mpo_score(mols: Sequence[Chem.Mol | None]) -> float:
     """Average CNS Multi-Parameter Optimization score (Wager et al., 2010).
-    
+  
     6-parameter score: MW, LogP, HBD, tPSA, pKa, CLogD.
     Score 0-6; higher = more BBB-favorable. Mean ≥ 4.0 is good.
     """
@@ -440,9 +441,9 @@ def cns_mpo_score(mols: Sequence[Chem.Mol | None]) -> float:
 
 ### 4.3 Verification
 
-- [ ] All new metrics return floats in sensible ranges
-- [ ] `evaluate()` backward compatible when `bbb_classifier=None`
-- [ ] Scaffold diversity: QM9 molecules should show IntDiv > 0.8
+- [ ]  All new metrics return floats in sensible ranges
+- [ ]  `evaluate()` backward compatible when `bbb_classifier=None`
+- [ ]  Scaffold diversity: QM9 molecules should show IntDiv > 0.8
 
 ---
 
@@ -558,9 +559,9 @@ ablations:
 
 ### 5.5 Verification
 
-- [ ] All new configs pass YAML validation
-- [ ] `run_sweep.py --dry-run` prints the full grid without executing
-- [ ] Backward compatibility: `python train.py --config configs/central.yaml` runs unchanged
+- [ ]  All new configs pass YAML validation
+- [ ]  `run_sweep.py --dry-run` prints the full grid without executing
+- [ ]  Backward compatibility: `python train.py --config configs/central.yaml` runs unchanged
 
 ---
 
@@ -610,7 +611,7 @@ def partition_bbb_label(
     dataset, num_clients: int, seed: int = 42
 ) -> dict[int, list[int]]:
     """Non-IID partitioning by BBB label.
-    
+  
     Some clients get mostly BBB+ molecules, others mostly BBB-.
     This simulates real pharmaceutical data silos where different 
     companies have different chemical libraries.
@@ -639,10 +640,10 @@ def partition_bbb_label(
 
 ### 6.4 Verification
 
-- [ ] `python train.py --config configs/central.yaml` works unchanged (QM9)
-- [ ] `python train.py --config configs/central_bbb.yaml` trains on BBBP
-- [ ] `python generate_and_eval.py --target_bbb 1 --guidance_scale 2.0` generates BBB+ molecules
-- [ ] BBB% in generated output is significantly > 50% (random baseline)
+- [ ]  `python train.py --config configs/central.yaml` works unchanged (QM9)
+- [ ]  `python train.py --config configs/central_bbb.yaml` trains on BBBP
+- [ ]  `python generate_and_eval.py --target_bbb 1 --guidance_scale 2.0` generates BBB+ molecules
+- [ ]  BBB% in generated output is significantly > 50% (random baseline)
 
 ---
 
@@ -656,7 +657,7 @@ def partition_bbb_label(
 ```python
 def plot_convergence_curves(history_paths: dict[str, str], output_path: str):
     """Plot server loss vs round for multiple configs (Fig. 1 in paper).
-    
+  
     Args:
         history_paths: {"IID K=4": "outputs/fed_iid/history.json", ...}
     """
@@ -685,9 +686,9 @@ def plot_guidance_scale_sweep(results: dict, output_path: str):
 
 ### 7.2 Verification
 
-- [ ] All plots render without error with synthetic data
-- [ ] Figures saved as both PDF (for paper) and PNG (for slides)
-- [ ] Color scheme is colorblind-friendly (using seaborn's "colorblind" palette)
+- [ ]  All plots render without error with synthetic data
+- [ ]  Figures saved as both PDF (for paper) and PNG (for slides)
+- [ ]  Color scheme is colorblind-friendly (using seaborn's "colorblind" palette)
 
 ---
 
@@ -702,37 +703,37 @@ def plot_guidance_scale_sweep(results: dict, output_path: str):
 class TestBBBDataset:
     def test_smiles_to_3d_valid(self):
         """Aspirin SMILES converts to valid 3D Data."""
-    
+  
     def test_smiles_to_3d_properties(self):
         """Data object has qed, logp, tpsa, mw attributes."""
-    
+  
     def test_bbbp_label_distribution(self):
         """BBBP dataset has ~75% BBB+ labels."""
 
 class TestConditionedEGNN:
     def test_unconditional_backward_compat(self):
         """cond_dim=0 produces identical output to original model."""
-    
+  
     def test_conditional_forward(self):
         """cond_dim=32 forward pass runs without error."""
-    
+  
     def test_label_dropout(self):
         """100% dropout produces unconditional output."""
-    
+  
     def test_guidance_scale_zero(self):
         """guidance_scale=0 matches standard conditional output."""
 
 class TestBBBClassifier:
     def test_predict_mol_range(self):
         """Output is in [0, 1] for any valid Mol."""
-    
+  
     def test_known_bbb_positive(self):
         """Caffeine (known BBB+) scores > 0.5."""
 
 class TestExtendedMetrics:
     def test_scaffold_diversity_range(self):
         """ScaffDiv in [0, 1]."""
-    
+  
     def test_lipinski_known(self):
         """Aspirin passes Lipinski (known drug-like)."""
 ```
@@ -752,12 +753,12 @@ graph TD
     P5 --> P6
     P6 --> P7["Phase 7<br/>Visualization<br/>~2 days"]
     P4 --> P8["Phase 8<br/>Testing<br/>~2 days"]
-    
+  
     P6 --> E1["🧪 Run Experiments<br/>~1 week"]
     P7 --> E2["📊 Generate Figures<br/>~2 days"]
     E1 --> E2
     E2 --> W["📝 Write Paper<br/>~2 weeks"]
-    
+  
     style P1 fill:#ff6b6b,stroke:#333,color:#fff
     style P2 fill:#ff6b6b,stroke:#333,color:#fff
     style P3 fill:#ff6b6b,stroke:#333,color:#fff
@@ -773,13 +774,9 @@ graph TD
 > These decisions affect the implementation. Please review:
 
 1. **Dataset priority:** Should we use **BBBP only** (2,039 molecules — standard benchmark, faster experiments) or **BBBP + B3DB** (both — stronger paper but ~2x implementation effort)?
-
 2. **Model size for BBB:** BBB molecules are larger than QM9 (avg ~25 atoms vs ~18). Should we scale up `node_dim` from 64→128 and `num_layers` from 4→6, or keep the same architecture for a cleaner ablation?
-
 3. **Guidance scale:** Do you want to include a guidance scale sweep (w ∈ {0, 0.5, 1.0, 2.0, 4.0, 8.0}) as a figure? This shows controllability but adds ~6 experiment runs.
-
 4. **Number of seeds:** 3 seeds (minimum for error bars) or 5 seeds (stronger statistics but 5x compute)?
-
 5. **Compute resources:** What GPU do you have access to? This affects experiment batch sizes and total sweep time. For reference, QM9 training takes ~2 hours on an RTX 3090 for 100 epochs.
 
 ---
@@ -787,6 +784,7 @@ graph TD
 ## Verification Plan
 
 ### Automated Tests
+
 ```bash
 # Run all tests
 python -m pytest tests/ -v
@@ -796,6 +794,7 @@ python -m pytest tests/test_bbb_pipeline.py -v
 ```
 
 ### Manual Verification
+
 1. After Phase 1: Inspect 5 random BBBP molecules — verify 3D coords look reasonable
 2. After Phase 3: BBB oracle AUROC ≥ 0.88 on test set
 3. After Phase 6: Run 1-epoch smoke test on BBBP with conditioning

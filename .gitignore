@@ -21,6 +21,15 @@ logs/*
 P1_5.pdf
 P1_5.pdf:Zone.Identifier
 
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+
 # project doc tree (AsciiDoc + generated assets), rendered to build/
 doc/build/
 

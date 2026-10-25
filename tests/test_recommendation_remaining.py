@@ -306,7 +306,7 @@ class TestCliWiring:
 
     def test_tolerance_matrix_doc_entry(self):
         """The appendix must record what was (and wasn't) implemented."""
-        with open("docs/recommendation.md") as f:
+        with open("docs/recommendation.md", encoding="utf-8") as f:
             doc = f.read()
         for token in ("Implementation Status", "TOLERANCE_MATRIX",
                       "3.2 DONE", "NOT IMPLEMENTED"):

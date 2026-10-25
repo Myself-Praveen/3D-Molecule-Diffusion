@@ -121,6 +121,8 @@ class TestBackfillConnectivity:
         assert parsed != int(data["num_valid"])
 
     def test_validate_mode_exits_clean(self):
+        if not (REPO / "outputs" / "eval_v3_eta10" / "molecules.sdf").exists():
+            pytest.skip("eval_v3_eta10 artifacts not present")
         proc = subprocess.run(
             [sys.executable,
              str(REPO / "scripts" / "backfill_connectivity.py"),

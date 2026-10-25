@@ -1,0 +1,10 @@
+# Streamlit Molecular Visualization Suite Dependencies
+streamlit>=1.35.0
+py3Dmol>=2.4.0
+stmol>=0.0.9
+plotly>=5.20.0
+pandas>=2.0.0
+rdkit>=2023.09.1
+torch>=2.0.0
+numpy>=1.24.0
+ipython_genutils>=0.2.0

@@ -598,6 +598,52 @@ def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
     }
 
 
+def nn_outside_window_pct(
+    pos: np.ndarray,
+    atomic_numbers: np.ndarray,
+    bond_tolerance: float | None = None,
+) -> float:
+    """% of atoms whose *nearest* neighbour lies outside the bond window.
+
+    Rescue plan R1's geometry axis. The window is the eval's own
+    ``r_i + r_j + get_bond_tolerance(i, j)``, so this ruler and the bond
+    builder cannot disagree. An atom with no in-window neighbour can never
+    form a bond, so it is always a fragment tip — real BBBP measures 0.1 %,
+    V5 7.0 %, V6 57.4 % (rescueplan.md §1).
+
+    Args:
+        pos: ``(N, 3)`` coordinates in Å.
+        atomic_numbers: ``(N,)`` integer atomic numbers.
+        bond_tolerance: optional tighten-cap, exactly as the bond builder.
+
+    Returns:
+        Percentage in ``[0, 100]``; 0.0 for a single atom.
+    """
+    pos = np.asarray(pos, dtype=float)
+    z = np.asarray(atomic_numbers, dtype=int).reshape(-1)
+    n = len(z)
+    if n < 2:
+        return 0.0
+    diff = pos[:, None, :] - pos[None, :, :]
+    dist = np.sqrt((diff ** 2).sum(-1))
+    np.fill_diagonal(dist, np.inf)
+    nearest = dist.min(axis=1)
+    nearest_index = dist.argmin(axis=1)
+
+    outside = 0
+    for i in range(n):
+        j = int(nearest_index[i])
+        ri = _COVALENT_RADII.get(int(z[i]))
+        rj = _COVALENT_RADII.get(int(z[j]))
+        if ri is None or rj is None:
+            continue
+        window = ri + rj + get_bond_tolerance(
+            int(z[i]), int(z[j]), cap=bond_tolerance)
+        if nearest[i] > window:
+            outside += 1
+    return 100.0 * outside / n
+
+
 # ---------------------------------------------------------------------------
 # Phase 4: BBB-specific metrics (implementation.md)
 # ---------------------------------------------------------------------------

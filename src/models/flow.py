@@ -93,7 +93,7 @@ def flow_x0_pred(
     x_u: torch.Tensor,
     u: torch.Tensor | float,
     batch: torch.Tensor | None = None,
-    clamp: float | None = None,
+    clamp: float | torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Recover the clean-coordinate prediction from a velocity prediction.
 

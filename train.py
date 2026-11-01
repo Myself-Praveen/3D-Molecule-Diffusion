@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -114,28 +115,77 @@ def save_checkpoint(state: dict, path: Path) -> None:
 def _quick_validity(
     model, coord_ddpm, type_ddpm, device,
     num_samples: int = 16, ddim_steps: int = 20,
-) -> float:
-    """Sample a few molecules and return validity % (geometry health probe)."""
+    atom_count_pool: Sequence[int] | None = None,
+) -> dict[str, float]:
+    """Sample a few molecules and return generation-health metrics.
+
+    R3 (rescue plan): molecule sizes are drawn from the *real* training
+    atom-count histogram instead of a hardcoded 18. The old hardcode is QM9's
+    size; BBBP's mean is 46, so the probe was measuring a distribution the
+    checkpoint was never asked to generate. The probe also reports
+    single-fragment % and the orphan rate (R1's axis), so
+    ``checkpoint.select_by: generation`` can rank checkpoints on what they
+    actually generate instead of on val loss (Finding D: V6's best.pt had the
+    lower val loss and 25x worse connectivity).
+
+    Returns:
+        ``{"validity", "conn_frac", "nn_outside", "score"}`` in percent.
+        ``score`` is ``conn_frac - nn_outside`` (higher is better).
+    """
+    import numpy as np
+    from rdkit import Chem
+
     from src.sampling import sample_molecules
-    from src.utils.evaluation import coords_and_types_to_mol, validity
+    from src.utils.evaluation import (
+        coords_and_types_to_mol,
+        nn_outside_window_pct,
+        validity,
+    )
 
     model.eval()
-    counts = torch.full((num_samples,), 18, dtype=torch.long)
+    if atom_count_pool:
+        pool = list(atom_count_pool)
+        counts_list = [int(random.choice(pool)) for _ in range(num_samples)]
+    else:
+        counts_list = [18] * num_samples
+    counts = torch.tensor(counts_list, dtype=torch.long)
     try:
         pos, z = sample_molecules(
             model, coord_ddpm, type_ddpm, counts,
             device=device, ddim_steps=ddim_steps,
         )
     except Exception:
-        return 0.0
+        return {
+            "validity": 0.0, "conn_frac": 0.0,
+            "nn_outside": float("nan"), "score": float("-inf"),
+        }
+
     mols = []
+    orphan_pcts = []
     off = 0
-    for _ in range(num_samples):
-        mols.append(coords_and_types_to_mol(
-            pos[off:off + 18].numpy(), z[off:off + 18].numpy().astype(int),
-        ))
-        off += 18
-    return float(validity(mols)) * 100.0
+    for count in counts_list:
+        mol_pos = pos[off:off + count].numpy()
+        mol_z = z[off:off + count].numpy().astype(int)
+        mols.append(coords_and_types_to_mol(mol_pos, mol_z))
+        orphan_pcts.append(nn_outside_window_pct(mol_pos, mol_z))
+        off += count
+
+    valid_mols = [m for m in mols if m is not None]
+    connected = 0
+    for m in valid_mols:
+        try:
+            if len(Chem.GetMolFrags(m)) == 1:
+                connected += 1
+        except Exception:
+            pass
+    conn_frac = 100.0 * connected / max(len(valid_mols), 1)
+    nn_outside = float(np.mean(orphan_pcts)) if orphan_pcts else float("nan")
+    return {
+        "validity": float(validity(mols)) * 100.0,
+        "conn_frac": conn_frac,
+        "nn_outside": nn_outside,
+        "score": conn_frac - nn_outside,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +272,9 @@ def train_diffusion(
         f"test: {len(test_ds)}"
     )
 
+    # R3 (rescue plan): the generation probe samples real training sizes.
+    atom_count_pool = [int(data.z.size(0)) for data in train_ds]
+
     # Models ----------------------------------------------------------------
     coord_ddpm = CenteredDDPM.from_config(diff_cfg, device=device)
     type_ddpm = TypeDDPM(
@@ -303,6 +356,26 @@ def train_diffusion(
     ckpt_dir = Path(ckpt_cfg["dir"])
     last_path = ckpt_dir / "last.pt"
 
+    # R3 (rescue plan): best.pt ranks on a generation metric when asked. The
+    # default stays val_loss so every recorded arm is reproducible; the rescue
+    # arm (configs/central_v7_bbb_nosnr.yaml) opts in.
+    gen_cfg = cfg.get("generation", {})
+    gen_every = int(gen_cfg.get("eval_every", 0))
+    select_by = str(ckpt_cfg.get("select_by", "val_loss")).strip().lower()
+    if select_by not in ("val_loss", "generation"):
+        raise ValueError(
+            f"Unknown checkpoint.select_by={select_by!r} "
+            f"(expected 'val_loss' or 'generation')"
+        )
+    if select_by == "generation" and gen_every <= 0:
+        raise ValueError(
+            "checkpoint.select_by='generation' requires generation.eval_every > 0 "
+            "— without the probe there is no generation score to rank on"
+        )
+    if select_by == "generation":
+        print("  Checkpoint selection: generation score "
+              "(ConnFrac - NN-outside-window), not val loss")
+
     lambda_type = train_cfg.get("type_loss_weight", 0.5)
     lambda_valence = float(train_cfg.get("valence_loss_weight", 0.0))
     # §13.14 ablation switch: renormalize the λ₂ demand side over live classes.
@@ -325,6 +398,7 @@ def train_diffusion(
     # ---- Resume handling (explicit --resume only) ---------------------------
     start_epoch = 1
     best_val_loss = float("inf")
+    best_gen_score = float("-inf")
     patience = train_cfg.get("patience", 10)
     epochs_no_improve = 0
     if resume:
@@ -419,6 +493,7 @@ def train_diffusion(
                 ema = EMA(model, decay=ema_decay,
                           warmup=int(train_cfg.get("ema_warmup_steps", 1000)))
             best_val_loss = float(resume_state.get("best_val_loss", resume_state.get("val_loss", float("inf"))))
+            best_gen_score = float(resume_state.get("best_gen_score", float("-inf")))
             epochs_no_improve = int(resume_state.get("epochs_no_improve", 0))
             start_epoch = int(resume_state.get("epoch", 0)) + 1
             # Restore RNG for exact data/noise sequence continuation
@@ -774,15 +849,14 @@ def train_diffusion(
         avg_val_type = val_type_loss / max(len(val_loader), 1)
         avg_val_loss = avg_val_pos + lambda_type * avg_val_type
 
-        # ---- Periodic quick validity probe (tracks geometry quality live) ----
-        gen_cfg = cfg.get("generation", {})
-        gen_every = int(gen_cfg.get("eval_every", 0))
-        quick_valid = None
+        # ---- Periodic generation probe (tracks geometry quality live) ----
+        quick = None
         if gen_every > 0 and (epoch % gen_every == 0 or epoch == end_epoch):
-            quick_valid = _quick_validity(
+            quick = _quick_validity(
                 model, coord_ddpm, type_ddpm, device,
                 num_samples=int(gen_cfg.get("num_samples", 16)),
                 ddim_steps=int(gen_cfg.get("ddim_steps", 20)),
+                atom_count_pool=atom_count_pool,
             )
 
         lr_now = optimizer.param_groups[0]["lr"]
@@ -792,7 +866,10 @@ def train_diffusion(
             f"baseline={baseline_mse:.4f} | "
             f"val_pos={avg_val_pos:.4f}  val_type={avg_val_type:.4f}  val={avg_val_loss:.4f} | "
             f"lr={lr_now:.2e}"
-            + (f" | quick_valid={quick_valid:.1f}%" if quick_valid is not None else "")
+            + (f" | quick_valid={quick['validity']:.1f}%"
+               f" conn={quick['conn_frac']:.1f}%"
+               f" nn_out={quick['nn_outside']:.1f}%"
+               if quick is not None else "")
             + (f" | dpo={total_dpo / max(len(train_loader), 1):.4f}"
                if dpo_weight > 0.0 else "")
         )
@@ -803,9 +880,22 @@ def train_diffusion(
         if ema is not None:
             eval_model_backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
             ema.copy_to(model)
-        if avg_val_loss < best_val_loss:
+        val_improved = avg_val_loss < best_val_loss
+        if val_improved:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        # R3 (rescue plan): rank best.pt on the generation probe when asked.
+        gen_improved = False
+        if select_by == "generation" and quick is not None:
+            if quick["score"] > best_gen_score:
+                best_gen_score = quick["score"]
+                gen_improved = True
+        save_best = gen_improved if select_by == "generation" else val_improved
+
+        if save_best:
             save_checkpoint(
                 {
                     "epoch": epoch,
@@ -815,6 +905,8 @@ def train_diffusion(
                     "ema_state_dict": ema.state_dict() if ema is not None else None,
                     "best_val_loss": best_val_loss,
                     "val_loss": best_val_loss,
+                    "best_gen_score": best_gen_score,
+                    "gen_metrics": quick,
                     "epochs_no_improve": epochs_no_improve,
                     "rng_random": random.getstate(),
                     "rng_torch": torch.get_rng_state(),
@@ -822,9 +914,15 @@ def train_diffusion(
                 },
                 ckpt_dir / "best.pt",
             )
-            print(f"  ✓ Saved best model (val_loss={best_val_loss:.4f})")
-        else:
-            epochs_no_improve += 1
+            if select_by == "generation" and quick is not None:
+                print(
+                    f"  ✓ Saved best model (gen_score={best_gen_score:.1f} "
+                    f"[conn={quick['conn_frac']:.1f}% "
+                    f"nn_out={quick['nn_outside']:.1f}%], "
+                    f"val_loss={best_val_loss:.4f})"
+                )
+            else:
+                print(f"  ✓ Saved best model (val_loss={best_val_loss:.4f})")
 
         if ema is not None:
             model.load_state_dict(eval_model_backup)

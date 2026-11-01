@@ -81,7 +81,7 @@ def molecule_statistics(
             "n_atoms": n, "n_pairs": 0, "contacts": 0,
             "contact_fraction": float("nan"), "nn_mean": float("nan"),
             "nn_p50": float("nan"), "radius_of_gyration": 0.0,
-            "pair_counts": {},
+            "orphans": 0, "pair_counts": {},
         }
 
     diff = pos[:, None, :] - pos[None, :, :]
@@ -96,6 +96,18 @@ def molecule_statistics(
 
     nn = dist + np.eye(n) * 1e9
     nearest = nn.min(axis=1)
+    nearest_index = nn.argmin(axis=1)
+
+    # R1 (rescue plan): orphan atoms — the nearest neighbour falls outside the
+    # eval's bond window, so the atom can never bond and is always a fragment
+    # tip. This is the scale-free geometry axis that replaced "bonds/mol ~ 19".
+    nn_windows = np.array([
+        bond_window(int(z[i]), int(z[int(nearest_index[i])]), bond_tolerance)
+        for i in range(n)
+    ])
+    measured = np.isfinite(nn_windows)
+    orphans = int(((nearest > nn_windows) & measured).sum())
+
     centered = pos - pos.mean(axis=0, keepdims=True)
     rog = float(np.sqrt((centered ** 2).sum(-1).mean()))
 
@@ -137,6 +149,7 @@ def molecule_statistics(
         "nn_mean": float(nearest.mean()),
         "nn_p50": float(np.median(nearest)),
         "radius_of_gyration": rog,
+        "orphans": orphans,
         "fragments": len(sizes),
         "largest_fragment_fraction": max(sizes.values()) / n,
         "pair_counts": dict(pair_counts),
@@ -151,6 +164,7 @@ def aggregate(stats: list[dict]) -> dict:
     sizes = np.array([s["n_atoms"] for s in usable], dtype=float)
     bonds = np.array([s["contacts"] for s in usable], dtype=float)
     per_atom = bonds / np.maximum(sizes, 1.0)
+    orphans = np.array([s.get("orphans", 0) for s in usable], dtype=float)
 
     pair_totals: dict[str, float] = defaultdict(float)
     for s in usable:
@@ -167,6 +181,7 @@ def aggregate(stats: list[dict]) -> dict:
         "n_atoms_mean": float(sizes.mean()),
         "bonds_per_mol": float(bonds.mean()),
         "bonds_per_atom": float(bonds.mean() / max(sizes.mean(), 1.0)),
+        "nn_outside_window_pct": 100.0 * float(orphans.sum() / max(sizes.sum(), 1.0)),
         "contact_fraction": float(np.mean([s["contact_fraction"] for s in usable])),
         "nn_mean": float(np.mean([s["nn_mean"] for s in usable])),
         "nn_p50": float(np.median([s["nn_p50"] for s in usable])),
@@ -251,6 +266,7 @@ def print_comparison(generated: dict, reference: dict | None) -> None:
         ("contact frac", "contact_fraction", 3),
         ("NN mean (A)", "nn_mean", 3),
         ("NN p50 (A)", "nn_p50", 3),
+        ("NN outside %", "nn_outside_window_pct", 2),
         ("Rgyr (A)", "radius_of_gyration", 2),
         ("corr(bonds,N)", "bonds_vs_size_pearson", 3),
         ("fragments/mol", "fragments_per_mol", 2),
@@ -389,6 +405,20 @@ def _verdict(generated: dict, reference: dict | None) -> str:
         kind += f"; radius of gyration {rgyr:.2f} A vs {ref_rgyr:.2f} real"
     if ref_nn is not None and nn > ref_nn + 0.3:
         kind += f"; NN {nn:.2f} A vs {ref_nn:.2f} real (too loose)"
+
+    # R1: the scale-free geometry axis. ``bonds/atom ~ 1.0`` replaces the old
+    # "bonds/mol ~ 19" check (which compared H-inclusive counts to a heavy-atom
+    # target), and the orphan rate (<= 1 %, real 0.1 %) is the fragmentation
+    # axis itself. Neither number moves with molecule size.
+    orphan = generated.get("nn_outside_window_pct")
+    if orphan is not None:
+        status = "PASS" if orphan <= 1.0 else "FAIL"
+        kind += (f"; NN-outside-window {orphan:.2f}% vs <=1.0% target "
+                 f"({status})")
+    bpa_status = "PASS"
+    if ref_bpa:
+        bpa_status = "PASS" if abs(bpa / ref_bpa - 1.0) <= 0.10 else "FAIL"
+    kind += (f"; bonds/atom {bpa:.2f} vs ~1.00 target ({bpa_status})")
     return kind
 
 

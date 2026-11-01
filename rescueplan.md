@@ -1,7 +1,9 @@
 # Rescue Plan — Fixing Zero Connectivity
 
 **Date:** October 27, 2026
-**Status:** Proposed — evidence gathered from the full codebase and every run output in `outputs/`
+**Status:** Implemented (Tier 0 R1–R3 + R4) — executed by `scripts/run_rescue_generation.sh`
+  (R4/R5, no retraining) and `scripts/run_rescue_training.sh` (R7 arm). R8/R9 remain campaigns,
+  as ordered in §3.
 **Scope:** why generation produces 0–23% single-fragment molecules, and the ordered set of steps that fixes it
 
 ---
@@ -154,3 +156,23 @@ unchanged Table-I protocol, without a validity sacrifice.
   `molecules.sdf` files, no regeneration.
 - Knob-coverage audit across all 130 `outputs/**/metrics.json` run blocks (which flags were ever
   non-default).
+
+### Execution
+
+What the tiers above became in the tree:
+
+| item | landed as |
+|---|---|
+| R1 geometry ruler | `nn_outside_window_pct()` in `src/utils/evaluation.py`; `scripts/diagnose_bbb_clump.py` reports it and gates bonds/atom ~1.0 + NN-outside <=1% |
+| R2 unit bugs | `src/sampling.py`: guidance runs in Å (`to_angstrom`/`to_model_space`) and `x0_clamp` scales with R(N) (`x0_clamp_bound`) |
+| R3 checkpoint selection | `train.py::_quick_validity` samples the real atom-count histogram and returns ConnFrac + NN-outside; `checkpoint.select_by: generation` ranks best.pt |
+| R4 attractive guidance | `src/guidance.py::connectivity_guidance` (+ energy, ramp), wired into the sampler and `--connectivity_*` CLI flags |
+| R5 knobs | `scripts/run_rescue_generation.sh` arms: valence_weight, ancestral DDPM, keep_largest_fragment |
+| R7 next training arm | `configs/central_v7_bbb_nosnr.yaml` (min_snr_gamma 0.0 + select_by generation) |
+
+Commands (generation first — cheapest, no retraining; DPO stays gated behind the R1 gate):
+
+```bash
+bash scripts/run_rescue_generation.sh     # R1 re-measure + R4 arms + R5 quick checks
+bash scripts/run_rescue_training.sh       # R7 arm (~33 h CPU; --resume --run_epochs 400 to chunk)
+```

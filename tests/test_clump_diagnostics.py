@@ -84,3 +84,33 @@ class TestAggregate:
 
     def test_empty_input(self):
         assert aggregate([])["n_molecules"] == 0
+
+
+class TestOrphanRate:
+    """R1 (rescue plan): NN-outside-window is the geometry axis.
+
+    % of atoms whose nearest neighbour is outside the eval bond window; such
+    an atom can never bond, so it is always a fragment tip. Real BBBP 0.1 %,
+    V5 7.0 %, V6 57.4 %.
+    """
+
+    def test_chain_has_no_orphans(self):
+        pos, z = _chain(5)
+        s = molecule_statistics(pos, z)
+        assert s["orphans"] == 0
+        assert aggregate([s])["nn_outside_window_pct"] == pytest.approx(0.0)
+
+    def test_separated_atoms_are_all_orphans(self):
+        pos = np.array([[0.0, 0.0, 0.0], [30.0, 0.0, 0.0]])
+        s = molecule_statistics(pos, np.array([6, 6]))
+        assert s["orphans"] == 2
+        assert aggregate([s])["nn_outside_window_pct"] == pytest.approx(100.0)
+
+    def test_near_miss_is_not_an_orphan(self):
+        # C-C window 1.97 A; 2.4 A is outside the window -> both are orphans.
+        pos = np.array([[0.0, 0.0, 0.0], [1.9, 0.0, 0.0]])
+        s = molecule_statistics(pos, np.array([6, 6]))
+        assert s["orphans"] == 0
+        pos2 = np.array([[0.0, 0.0, 0.0], [2.4, 0.0, 0.0]])
+        s2 = molecule_statistics(pos2, np.array([6, 6]))
+        assert s2["orphans"] == 2

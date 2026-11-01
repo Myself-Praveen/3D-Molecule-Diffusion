@@ -1,0 +1,98 @@
+# V7 BBB (R7): the V5 recipe with the eps/min-SNR coupling removed.
+#
+# rescueplan.md R7 — "lose the eps/min-SNR coupling on the coordinate head":
+# `min_snr_gamma: 5.0` down-weights every step by gamma/SNR, i.e. exactly the
+# low-noise steps where bond lengths are decided (Finding D). This arm keeps
+# the objective and the architecture bit-identical to V5 and changes two
+# things only:
+#
+#   1. training.min_snr_gamma: 0.0 — full weight on the low-noise steps.
+#   2. checkpoint.select_by: generation — best.pt is ranked on the live probe's
+#      ConnFrac - NN-outside-window score instead of val loss (R3; V6's
+#      best.pt had the lower val loss and 25x worse connectivity).
+#
+# The probe samples real BBBP sizes (R3), so the generation score is measured
+# on the distribution the checkpoint is asked to generate.
+#
+# One arm is ~33 h CPU at 8 threads (the host's measured optimum).
+#
+#   OMP_NUM_THREADS=8 bash scripts/run_rescue_training.sh
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  cond_dim: 32
+  num_cond_classes: 2
+  use_attention: true
+  self_condition: true
+  coord_refine_layers: 2
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+# DPO stays gated behind the corrected R1 geometry gate (rescueplan.md §2).
+rl:
+  enabled: false
+  pair_file: outputs/rl_pairs/pairs.pt
+  init_checkpoint: checkpoints/central_v7_bbb_nosnr/best.pt
+  dpo_ref_checkpoint: checkpoints/central_v7_bbb_nosnr/best.pt
+  dpo_weight: 0.1
+  dpo_beta: 0.1
+  dpo_batch_size: 32
+  dpo_epochs: 100
+  dpo_lr: 1.0e-5
+  dpo_pair_type: seed_matched
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine
+  beta_start: 1.0e-4
+  beta_end: 0.02
+  objective: eps
+
+training:
+  epochs: 3900
+  batch_size: 32
+  lr: 2.0e-4
+  warmup_epochs: 20
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 8
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 3900
+  ema_decay: 0.9999
+  ema_warmup_steps: 2000
+  min_snr_gamma: 0.0          # R7: no down-weighting of the low-noise steps
+  rotation_augment_prob: 0.5
+
+generation:
+  eval_every: 100             # the probe feeds checkpoint selection
+  num_samples: 16
+  ddim_steps: 20
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/central_v7_bbb_nosnr
+  save_every: 200
+  select_by: generation        # R3: ConnFrac - NN-outside-window, not val loss

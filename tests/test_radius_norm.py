@@ -17,7 +17,13 @@ import torch
 
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.objectives import x0_geometry_consistency, x0_valence_penalty
-from src.sampling import sample_molecules
+from src.sampling import (
+    angstrom_scale,
+    sample_molecules,
+    to_angstrom,
+    to_model_space,
+    x0_clamp_bound,
+)
 
 
 class _ZeroModel(torch.nn.Module):
@@ -197,3 +203,56 @@ class TestResumeGuard:
 
         src = inspect.getsource(train_diffusion)
         assert "radius_norm" in src
+
+
+class TestGuidanceSpace:
+    """R2 (rescue plan): guidance is an Å-space construct under radius_norm.
+
+    Finding C: the energies and their thresholds (covalent radii, bond
+    windows, per-step caps) are Å quantities, but under ``radius_norm`` the
+    sampler's x̂₀ lives in units of R(N) — so applying them directly to the
+    normalized estimate made every real bond look like a catastrophic clash.
+    """
+
+    def test_scale_is_one_when_normalization_off(self):
+        ddpm = CenteredDDPM(num_steps=10, device="cpu")
+        batch = torch.tensor([0, 0, 1])
+        assert torch.allclose(angstrom_scale(ddpm, batch), torch.ones(3, 1))
+
+    def test_scale_is_R_of_N_when_normalized(self):
+        ddpm = CenteredDDPM(
+            num_steps=10, device="cpu", radius_norm="atom_count", radius_coeff=1.06)
+        batch = torch.tensor([0, 0, 8, 8, 8])
+        assert torch.allclose(angstrom_scale(ddpm, batch), ddpm.per_atom_radius(batch))
+
+    def test_angstrom_round_trip(self):
+        ddpm = CenteredDDPM(num_steps=10, device="cpu", radius_norm="atom_count")
+        batch = torch.tensor([0, 0, 8, 8, 8])
+        x = torch.randn(5, 3, generator=torch.Generator().manual_seed(0))
+        back = to_model_space(to_angstrom(x, ddpm, batch), ddpm, batch)
+        assert torch.allclose(back, x, atol=1e-6)
+
+    def test_x0_clamp_is_ten_angstrom_not_ten_model_units(self):
+        ddpm = CenteredDDPM(num_steps=10, device="cpu", radius_norm="atom_count")
+        batch = torch.tensor([0, 0, 8, 8, 8])
+        bound = x0_clamp_bound(10.0, ddpm, batch)
+        assert torch.allclose(bound, 10.0 / ddpm.per_atom_radius(batch))
+        # Unnormalized samplers keep the legacy scalar bound.
+        plain = CenteredDDPM(num_steps=10, device="cpu")
+        assert x0_clamp_bound(10.0, plain, batch) == 10.0
+
+    def test_guidance_runs_finite_under_radius_norm(self):
+        """Pre-fix this path applied 1.14 Å clash thresholds to ~0.5 Å
+        normalized coordinates: the guidance fought real bonds every step.
+        """
+        torch.manual_seed(0)
+        model = _ZeroModel()
+        tp = TypeDDPM(num_steps=20, device="cpu")
+        normed = CenteredDDPM(num_steps=20, device="cpu", radius_norm="atom_count")
+        pos, _ = sample_molecules(
+            model, normed, tp, torch.tensor([8, 27]), device="cpu",
+            ddim_steps=5, steric_weight=5.0, steric_start_frac=0.0,
+            steric_r_clash=6.0,
+        )
+        assert torch.isfinite(pos).all()
+        assert pos[:8].mean(0).abs().max().item() < 1e-4

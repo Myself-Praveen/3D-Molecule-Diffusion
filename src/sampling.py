@@ -5,12 +5,17 @@ from __future__ import annotations
 import torch
 
 from src.guidance import (
+    DEFAULT_CONNECTIVITY_K_ATT,
+    DEFAULT_CONNECTIVITY_MAX_STEP,
+    DEFAULT_CONNECTIVITY_WINDOW_PAD,
     DEFAULT_K_REP,
     DEFAULT_SIGMA_SCALE,
     DEFAULT_VALENCE_COVALENT_FACTOR,
     DEFAULT_VALENCE_K_VAL,
     DEFAULT_VALENCE_MAX_STEP,
     DEFAULT_VALENCE_TAU,
+    connectivity_guidance,
+    connectivity_guidance_weight,
     steric_guidance,
     steric_guidance_weight,
     valence_guidance,
@@ -31,6 +36,54 @@ def _center_per_molecule(pos: torch.Tensor, batch: torch.Tensor) -> torch.Tensor
         .unsqueeze(-1)
     )
     return pos - sums[batch] / counts[batch]
+
+
+def angstrom_scale(
+    coord_ddpm: CenteredDDPM,
+    batch: torch.Tensor,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Angström per model coordinate unit, per atom (shape ``(N, 1)``).
+
+    Exactly 1.0 when ``radius_norm="none"`` (so guidance applied through this
+    factor is bit-identical to the legacy path), ``R(N)`` otherwise.
+    """
+    return coord_ddpm.per_atom_radius(batch).to(dtype)
+
+
+def to_angstrom(
+    x: torch.Tensor,
+    coord_ddpm: CenteredDDPM,
+    batch: torch.Tensor,
+) -> torch.Tensor:
+    """Map a model-space tensor to Ångström (identity when unnormalized)."""
+    return x * angstrom_scale(coord_ddpm, batch, dtype=x.dtype)
+
+
+def to_model_space(
+    x: torch.Tensor,
+    coord_ddpm: CenteredDDPM,
+    batch: torch.Tensor,
+) -> torch.Tensor:
+    """Map an Ångström tensor back to the model's coordinate space."""
+    return x / angstrom_scale(coord_ddpm, batch, dtype=x.dtype)
+
+
+def x0_clamp_bound(
+    x0_clamp: float,
+    coord_ddpm: CenteredDDPM,
+    batch: torch.Tensor,
+    dtype: torch.dtype = torch.float32,
+) -> float | torch.Tensor:
+    """Per-component bound on x̂₀ that corresponds to ``x0_clamp`` Ångström.
+
+    ``x0_clamp`` is a *physical* box. Under ``radius_norm`` the model's x̂₀ is
+    in units of R(N), so the bound must be divided by R(N); otherwise the
+    default 10.0 is 36 Å and never binds (rescue plan Finding C).
+    """
+    if coord_ddpm.radius_norm == "none":
+        return x0_clamp
+    return (x0_clamp / angstrom_scale(coord_ddpm, batch, dtype=dtype)).to(dtype)
 
 
 def ddim_timestep_grid(
@@ -88,6 +141,11 @@ def sample_molecules(
     valence_k_val: float = DEFAULT_VALENCE_K_VAL,
     valence_max_step: float = DEFAULT_VALENCE_MAX_STEP,
     valence_enabled: bool = False,
+    connectivity_weight: float = 0.0,
+    connectivity_start_frac: float = 0.7,
+    connectivity_window_pad: float = DEFAULT_CONNECTIVITY_WINDOW_PAD,
+    connectivity_k_att: float = DEFAULT_CONNECTIVITY_K_ATT,
+    connectivity_max_step: float = DEFAULT_CONNECTIVITY_MAX_STEP,
     coord_temperature: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate centered 3D coordinates and atom types for a batch of molecules.
@@ -147,6 +205,20 @@ def sample_molecules(
             the per-pair contact distance. ``None`` (default) uses the
             per-pair term alone.
         steric_max_step: per-atom cap (Å) on one guidance displacement.
+        connectivity_weight: test-time **attractive** guidance strength ``w``
+            (rescue plan R4): for every atom whose nearest neighbour lies
+            within ``bond window + connectivity_window_pad``, pull the pair
+            toward the covalent distance. Same contract as ``steric_weight``
+            (peak of a linear ramp over the last part of the trajectory);
+            ``0.0`` is a bit-exact no-op. This is the one sampler term that
+            can close a fragment gap — steric and valence only push apart.
+        connectivity_start_frac: fraction of the reverse trajectory elapsed
+            before the attractive ramp starts (0.7 = the last 30 %, where bond
+            geometry is settled). Ignored when ``connectivity_weight == 0``.
+        connectivity_window_pad: extra reach (Å) beyond the eval's bond window
+            (the plan measured inter-fragment gaps 0.1-0.5 Å outside it).
+        connectivity_k_att: force constant of the attractive energy.
+        connectivity_max_step: per-atom cap (Å) on one attractive displacement.
         coord_temperature: coordinate-space analogue of ``type_temperature``
             (plan Intervention 2): after each reverse step, add Gaussian
             noise scaled by the *remaining* noise level of the step the
@@ -182,8 +254,16 @@ def sample_molecules(
             coord_ddpm.num_steps, ddim_steps, step_schedule
         )[:-1]
 
+    # R2 (rescue plan): every guidance threshold (covalent radii, bond windows,
+    # per-step caps) is a quantity in Ångström, but under ``radius_norm`` the
+    # sampler's coordinates live in units of R(N) (Å / R(N)). Guidance is
+    # therefore applied in Å and mapped back. Both helpers are exactly the
+    # identity when normalization is off, so legacy arms stay bit-identical.
+    clamp_bound = x0_clamp_bound(x0_clamp, coord_ddpm, batch, dtype=pos.dtype)
+
     def clamp_x0(x0: torch.Tensor) -> torch.Tensor:
-        return x0.clamp(-x0_clamp, x0_clamp)
+        # ``x0_clamp`` is 10 Å, not 10 model units (Finding C of the plan).
+        return x0.clamp(-clamp_bound, clamp_bound)
 
     # Tier 2.1: auto-enable self-conditioning for models trained with it.
     self_cond = (
@@ -207,11 +287,13 @@ def sample_molecules(
         num_steps: int,
         atom_types: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Steric + valence guidance on the clean estimate (no-op when both w <= 0).
+        """Steric + valence + attractive-connectivity guidance.
 
-        Part A is hard-sphere steric guidance; Part B is continuous hypervalency
-        guidance. Both ramp over the last fraction of the sampling steps so they
-        only act when bond geometry is being settled.
+        No-op (returns ``x0_pred`` itself) when all three weights are <= 0, so
+        every recorded recipe stays bit-identical. Under ``radius_norm`` the
+        estimate is denormalized to Å first — the energies and their thresholds
+        are Å quantities, and applying them to normalized coordinates made
+        every pair look like a catastrophic clash (rescue plan Finding C).
         """
         types_to_use = atom_types if atom_types is not None else z
 
@@ -219,27 +301,47 @@ def sample_molecules(
             step_idx, num_steps,
             ramp_start_frac=steric_start_frac, max_weight=steric_weight,
         )
+        w_v = valence_guidance_weight(
+            step_idx, num_steps,
+            ramp_start_frac=valence_start_frac, max_weight=valence_weight,
+        )
+        w_c = connectivity_guidance_weight(
+            step_idx, num_steps,
+            ramp_start_frac=connectivity_start_frac, max_weight=connectivity_weight,
+        )
+        if w_s <= 0.0 and w_v <= 0.0 and w_c <= 0.0:
+            return x0_pred
+
+        # Å space (identity when radius_norm="none").
+        x0_ang = to_angstrom(x0_pred, coord_ddpm, batch)
+
         if w_s > 0.0:
-            x0_pred = steric_guidance(
-                x0_pred, batch, atom_types=types_to_use, weight=w_s,
+            x0_ang = steric_guidance(
+                x0_ang, batch, atom_types=types_to_use, weight=w_s,
                 sigma_scale=steric_sigma_scale, k_rep=steric_k_rep,
                 r_clash=steric_r_clash,
                 max_step=steric_max_step, clamp=x0_clamp,
             )
 
-        w_v = valence_guidance_weight(
-            step_idx, num_steps,
-            ramp_start_frac=valence_start_frac, max_weight=valence_weight,
-        )
         if w_v > 0.0:
-            x0_pred = valence_guidance(
-                x0_pred, batch, atom_types=types_to_use, weight=w_v,
+            x0_ang = valence_guidance(
+                x0_ang, batch, atom_types=types_to_use, weight=w_v,
                 tau=valence_tau, covalent_factor=valence_covalent_factor,
                 k_val=valence_k_val, max_step=valence_max_step,
                 clamp=x0_clamp,
             )
 
-        return x0_pred
+        if w_c > 0.0:
+            # R4: the only attractive term — pulls near-miss pairs (the
+            # measured 0.1-0.5 Å fragment gaps) to their covalent distance.
+            x0_ang = connectivity_guidance(
+                x0_ang, batch, atom_types=types_to_use, weight=w_c,
+                window_pad=connectivity_window_pad,
+                k_att=connectivity_k_att, max_step=connectivity_max_step,
+                clamp=x0_clamp,
+            )
+
+        return to_model_space(x0_ang, coord_ddpm, batch)
 
     def _update_types(type_logits: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """One categorical posterior step q(z_{t-1} | z_t, p0) for all atoms."""
@@ -309,7 +411,9 @@ def sample_molecules(
             if not torch.isfinite(v_pred).all():
                 v_pred = torch.zeros_like(v_pred)
 
-            x0_pred = flow_x0_pred(v_pred, pos, u_cur, batch=batch, clamp=x0_clamp)
+            x0_pred = flow_x0_pred(
+                v_pred, pos, u_cur, batch=batch, clamp=clamp_bound,
+            )
             guided = _guide(x0_pred, i, num_ode_steps, atom_types=z)
             if guided is not x0_pred:
                 # On the OT path x_u ≈ x0 at low u, so the clean-space

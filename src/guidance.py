@@ -463,3 +463,172 @@ def steric_guidance(
     if clamp is not None:
         guided = guided.clamp(-clamp, clamp)
     return guided
+
+
+# ---------------------------------------------------------------------------
+# Attractive connectivity guidance (rescue plan R4)
+# ---------------------------------------------------------------------------
+# The steric and valence terms above are both *repulsive*: nothing in the
+# sampler can pull a fragment gap shut. V5's measured failure is exactly that
+# (rescueplan.md Finding A): its global size is right (R_gyr 3.68 A vs 3.09)
+# and its bond density is right (0.95 vs 1.00 bonds/atom), but every bond is
+# 10-19 % too long and inter-fragment gaps sit 0.1-0.5 A *outside* the bond
+# window, so 7 % of atoms have no in-window neighbour at all.
+#
+# This term adds the missing attractive half. For every atom whose nearest
+# neighbour lies within ``bond window + window_pad``, it pulls the pair toward
+# the covalent distance ``r_i + r_j``. Two design points:
+#
+#   1. One-sided (``relu(d - target)**2``). It can only shorten a near-miss
+#      contact; it never compresses a pair that is already at or below the
+#      covalent distance, so it cannot fight the steric term or distort real
+#      geometry (C=C 1.34 A and C=O 1.23 A are below their radii sums).
+#   2. Gated on the *nearest* neighbour plus a window pad. The near-miss pairs
+#      the plan measured (0.1-0.5 A outside the window) are exactly the ones
+#      this catches; genuinely separate components further away are left alone
+#      instead of being collapsed into one blob.
+#
+# The window uses the same covalent radii as the steric term, with the
+# calibrated scalar tolerance as the unlisted-pair default. The per-pair
+# ``TOLERANCE_MATRIX`` lives in ``src/utils/evaluation.py``, which imports this
+# module — importing it back would be a cycle. Non-default pairs differ by at
+# most 0.2 A, which the pad absorbs.
+DEFAULT_CONNECTIVITY_WINDOW_PAD: float = 0.5
+DEFAULT_CONNECTIVITY_TOLERANCE: float = 0.45
+DEFAULT_CONNECTIVITY_K_ATT: float = 1.0
+DEFAULT_CONNECTIVITY_MAX_STEP: float = 0.15
+
+
+def connectivity_energy(
+    pos: torch.Tensor,
+    batch: torch.Tensor,
+    atom_types: torch.Tensor | None = None,
+    window_pad: float = DEFAULT_CONNECTIVITY_WINDOW_PAD,
+    tolerance: float = DEFAULT_CONNECTIVITY_TOLERANCE,
+    k_att: float = DEFAULT_CONNECTIVITY_K_ATT,
+) -> torch.Tensor:
+    """One-sided attraction of each atom toward its nearest-neighbour bond.
+
+    For each atom ``i`` with nearest neighbour ``j*``:
+
+        E_i = 1/2 * k * relu(d_i - (r_i + r_j*))**2   if d_i <= r_i + r_j* + tol + pad
+
+    so a pair already at the covalent distance contributes zero force and the
+    term is purely attractive (it never separates atoms).
+
+    Args:
+        pos: ``(N, 3)`` coordinates — use the *clean* estimate x̂₀, in Å.
+        batch: ``(N,)`` molecule index per atom.
+        atom_types: ``(N,)`` atomic numbers (``None`` → carbon radii).
+        window_pad: extra reach (Å) beyond the bond window. The plan's measured
+            fragment gaps sit 0.1-0.5 Å outside the window; 0.5 covers them.
+        tolerance: pair tolerance used in the window (the unlisted-pair default
+            of ``TOLERANCE_MATRIX``).
+        k_att: force constant.
+
+    Returns:
+        Scalar tensor, differentiable w.r.t. ``pos``.
+    """
+    if pos.numel() == 0:
+        return pos.sum() * 0.0
+    if batch.numel() != pos.size(0):
+        raise ValueError(
+            f"batch has {batch.numel()} entries but pos has {pos.size(0)} atoms"
+        )
+    batch = batch.to(device=pos.device)
+    radii = atom_radii(atom_types, pos.size(0), pos.device, pos.dtype)
+
+    total = pos.sum() * 0.0  # keeps dtype/device and the autograd path alive
+    num_graphs = int(batch.max().item()) + 1
+    for g in range(num_graphs):
+        members = (batch == g).nonzero(as_tuple=False).squeeze(-1)
+        n = int(members.numel())
+        if n < 2:
+            continue
+        p = pos[members]
+        r = radii[members]
+        d = torch.sqrt(torch.cdist(p, p).square() + 1e-12)
+        # Mask the self-distance so min() returns a real neighbour.
+        diagonal = torch.eye(n, device=pos.device, dtype=torch.bool)
+        d_masked = d.masked_fill(diagonal, float("inf"))
+        nn_dist, nn_index = d_masked.min(dim=1)
+        target = r + r[nn_index]
+        window = target + tolerance + window_pad
+        gap = (nn_dist - target).clamp_min(0.0)
+        active = (nn_dist <= window).to(pos.dtype)
+        total = total + 0.5 * k_att * (gap.square() * active).sum()
+    return total
+
+
+def connectivity_guidance(
+    x0: torch.Tensor,
+    batch: torch.Tensor,
+    atom_types: torch.Tensor | None = None,
+    weight: float = 0.0,
+    window_pad: float = DEFAULT_CONNECTIVITY_WINDOW_PAD,
+    tolerance: float = DEFAULT_CONNECTIVITY_TOLERANCE,
+    k_att: float = DEFAULT_CONNECTIVITY_K_ATT,
+    max_step: float = DEFAULT_CONNECTIVITY_MAX_STEP,
+    clamp: float | torch.Tensor | None = None,
+) -> torch.Tensor:
+    """One attractive guided step: ``x̂₀ − w·∇E_connectivity(x̂₀)``.
+
+    Same contract as :func:`steric_guidance`: ``weight <= 0`` is an identity
+    no-op (returns ``x0`` itself, so existing recipes stay bit-identical), the
+    per-atom displacement is capped, the gradient is zero-mean per molecule
+    (CoM-preserving), and the result is clamped when a bound is given.
+
+    Args:
+        x0: clean-coordinate estimate, in Ångström.
+        batch: molecule index per atom.
+        atom_types: atomic numbers per atom (``None`` → carbon radii).
+        weight: guidance strength. ``<= 0`` disables the term.
+        window_pad / tolerance / k_att: forwarded to :func:`connectivity_energy`.
+        max_step: per-atom displacement cap in Å.
+        clamp: optional per-component bound (float or broadcastable tensor).
+
+    Returns:
+        Guided clean-coordinate estimate (same shape as ``x0``).
+    """
+    if weight <= 0.0 or x0.size(0) < 2:
+        return x0
+    with torch.enable_grad():
+        x = x0.detach().requires_grad_(True)
+        energy = connectivity_energy(
+            x, batch, atom_types=atom_types,
+            window_pad=window_pad, tolerance=tolerance, k_att=k_att,
+        )
+        (grad,) = torch.autograd.grad(energy, x, allow_unused=True)
+    if grad is None:
+        return x0
+    grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # CoM-preserving: remove the net gradient per molecule.
+    for g in batch.unique():
+        m = (batch == g)
+        row_grad = grad[m].clone()
+        row_grad = row_grad - row_grad.mean(dim=0, keepdim=True)
+        grad[m] = row_grad
+
+    step = (-weight * grad).clamp(-max_step, max_step)
+    guided = x0 + step
+    if clamp is not None:
+        guided = guided.clamp(-clamp, clamp)
+    return guided
+
+
+def connectivity_guidance_weight(
+    step_idx: int,
+    num_sampling_steps: int,
+    ramp_start_frac: float = 0.7,
+    max_weight: float = 0.0,
+) -> float:
+    """Attractive-connectivity ramp — identical contract to the steric ramp.
+
+    Zero until ``ramp_start_frac`` of the reverse trajectory, then linear up to
+    ``max_weight``; ``max_weight <= 0`` disables the term entirely.
+    """
+    return steric_guidance_weight(
+        step_idx, num_sampling_steps,
+        ramp_start_frac=ramp_start_frac, max_weight=max_weight,
+    )

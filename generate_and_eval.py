@@ -189,7 +189,7 @@ def main() -> None:
                              "--valence_enabled and --valence_weight <= 0)")
     parser.add_argument("--valence_start_frac", type=float, default=0.7,
                         help="Fraction of the reverse trajectory elapsed when "
-                             "the valence ramp starts (0.7 = last 30%)")
+                             "the valence ramp starts (0.7 = last 30%%)")
     parser.add_argument("--valence_tau", type=float, default=0.05,
                         help="Sigmoid sharpness for soft bond perception in Å "
                              "(default 0.05; contract: 0.05)")
@@ -201,6 +201,29 @@ def main() -> None:
     parser.add_argument("--valence_max_step", type=float, default=0.15,
                         help="Max per-atom displacement per guided step in Å "
                              "(default 0.15)")
+    parser.add_argument("--connectivity_enabled", action="store_true",
+                        help="Rescue plan R4: turn on attractive connectivity "
+                             "guidance at --connectivity_max_weight (the one "
+                             "sampler term that can pull a fragment gap shut)")
+    parser.add_argument("--connectivity_weight", type=float, default=0.0,
+                        help="Peak attractive guidance weight w on the clean "
+                             "x0 estimate (0 = off; overrides "
+                             "--connectivity_max_weight when > 0)")
+    parser.add_argument("--connectivity_max_weight", type=float, default=0.5,
+                        help="Peak ramp weight used with --connectivity_enabled")
+    parser.add_argument("--connectivity_start_frac", type=float, default=0.7,
+                        help="Fraction of the reverse trajectory elapsed when "
+                             "the attractive ramp starts (same contract as the "
+                             "steric/valence ramps; 0.7 = last 30%%)")
+    parser.add_argument("--connectivity_window_pad", type=float, default=0.5,
+                        help="Extra reach (Å) beyond the eval bond window; the "
+                             "plan measured inter-fragment gaps 0.1-0.5 Å "
+                             "outside it (default: 0.5)")
+    parser.add_argument("--connectivity_k_att", type=float, default=1.0,
+                        help="Force constant of the attractive energy")
+    parser.add_argument("--connectivity_max_step", type=float, default=0.15,
+                        help="Max per-atom attractive displacement in Å per "
+                             "guided step (default: 0.15)")
     args = parser.parse_args()
 
     # Plan Step 1.2 test matrix: --steric_enabled is the convenience switch
@@ -213,6 +236,10 @@ def main() -> None:
     args.valence_weight = max(float(args.valence_weight), 0.0)
     if args.valence_weight <= 0.0 and args.valence_enabled:
         args.valence_weight = 0.5
+
+    args.connectivity_weight = max(float(args.connectivity_weight), 0.0)
+    if args.connectivity_weight <= 0.0 and args.connectivity_enabled:
+        args.connectivity_weight = float(args.connectivity_max_weight)
 
     # Seed torch's GLOBAL generator — the sampler's randn noise draws come
     # from it, while --seed previously only reached the numpy atom-count rng.
@@ -375,6 +402,11 @@ def main() -> None:
             valence_covalent_factor=args.valence_covalent_factor,
             valence_k_val=args.valence_k_val,
             valence_max_step=args.valence_max_step,
+            connectivity_weight=args.connectivity_weight,
+            connectivity_start_frac=args.connectivity_start_frac,
+            connectivity_window_pad=args.connectivity_window_pad,
+            connectivity_k_att=args.connectivity_k_att,
+            connectivity_max_step=args.connectivity_max_step,
             coord_temperature=args.coord_temperature,
             cond=cond,
             guidance_scale=args.guidance_scale if cond is not None else 0.0,
@@ -528,6 +560,11 @@ def main() -> None:
             valence_covalent_factor=args.valence_covalent_factor,
             valence_k_val=args.valence_k_val,
             valence_max_step=args.valence_max_step,
+            connectivity_weight=args.connectivity_weight,
+            connectivity_start_frac=args.connectivity_start_frac,
+            connectivity_window_pad=args.connectivity_window_pad,
+            connectivity_k_att=args.connectivity_k_att,
+            connectivity_max_step=args.connectivity_max_step,
             coord_temperature=args.coord_temperature,
             keep_largest_fragment=args.keep_largest_fragment,
             # Bond-perception chain protocol (plan workstreams A1–A4) —

@@ -92,5 +92,5 @@ bbb_classifier:
   checkpoint: models/bbb_oracle.pt
 
 checkpoint:
-  dir: checkpoints/central_v6_bbb_radius
+  dir: checkpoints/central_v6_bbb
   save_every: 200

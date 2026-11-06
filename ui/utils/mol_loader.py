@@ -27,6 +27,77 @@ DEFAULT_VALENCE_MAX = {
 }
 
 
+_REFERENCE_METRICS_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _reference_metrics(pt_path: Path) -> Dict[str, Any]:
+    """Measured BBBP reference row (fix.md F17).
+
+    The old block hard-coded Validity 100 / ConnV 100 / BBB% 76.5 /
+    BondsPerMol 24.2 in the same ``st.metric`` widgets as measured runs. Only
+    the label rate is a dataset property; the rest are measurements, and
+    bonds/mol 24.2 contradicts this repo's own ground-truth control (47.3 at
+    45.9 atoms). Computed once from ``processed_3d.pt``. Hydrogen-inclusive
+    counts match the all-atom basis the eval builder uses.
+    """
+    global _REFERENCE_METRICS_CACHE
+    if _REFERENCE_METRICS_CACHE is not None:
+        return _REFERENCE_METRICS_CACHE
+
+    out: Dict[str, Any] = {
+        "Validity": None, "ConnectedValidity": None, "BBB%": None,
+        "BondsPerMol": None, "BondsPerAtom": None, "MeanAtoms": None,
+        "QED": None, "n_total": 0,
+    }
+    try:
+        payload = torch.load(pt_path, map_location="cpu", weights_only=False)
+        items = payload.get("items", [])
+    except Exception:
+        return out
+    if not items:
+        return out
+
+    atoms = bonds = valid = 0
+    qeds: List[float] = []
+    labels: List[int] = []
+    for item in items:
+        y = getattr(item, "y", None)
+        if y is not None:
+            try:
+                labels.append(int(y.view(-1)[0]))
+            except Exception:
+                pass
+        smi = getattr(item, "smiles", None)
+        mol = Chem.MolFromSmiles(str(smi)) if smi else None
+        if mol is None:
+            continue
+        mol_h = Chem.AddHs(mol)
+        valid += 1
+        atoms += mol_h.GetNumAtoms()
+        bonds += mol_h.GetNumBonds()
+        qed = getattr(item, "qed", None)
+        qeds.append(float(qed.view(-1)[0]) if qed is not None
+                    else float(Descriptors.qed(mol)))
+
+    if not valid:
+        return out
+    mean_atoms = atoms / valid
+    mean_bonds = bonds / valid
+    out = {
+        "Validity": 100.0 * valid / len(items),
+        "ConnectedValidity": 100.0 * valid / len(items),
+        "ConnectedFrac": 100.0,
+        "BBB%": (100.0 * sum(labels) / len(labels)) if labels else None,
+        "BondsPerMol": mean_bonds,
+        "BondsPerAtom": (mean_bonds / mean_atoms) if mean_atoms else None,
+        "MeanAtoms": mean_atoms,
+        "QED": (sum(qeds) / len(qeds)) if qeds else None,
+        "n_total": len(items),
+    }
+    _REFERENCE_METRICS_CACHE = out
+    return out
+
+
 def discover_evaluated_runs(outputs_dir: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
     """Scan outputs directory for evaluated runs and sort runs with molecules first."""
     if outputs_dir is None:
@@ -34,30 +105,24 @@ def discover_evaluated_runs(outputs_dir: Optional[Path] = None) -> Dict[str, Dic
 
     runs = {}
 
-    # 1. Add Ground Truth BBBP Reference dataset
+    # 1. Add Ground Truth BBBP Reference dataset (measured, not invented)
     bbbp_pt_path = REPO_ROOT / "data" / "bbbp" / "processed_3d.pt"
     if bbbp_pt_path.exists():
+        ref = _reference_metrics(bbbp_pt_path)
         runs["[Reference] BBBP Ground Truth"] = {
             "name": "[Reference] BBBP Ground Truth",
             "dir": str(bbbp_pt_path.parent),
             "metrics_path": None,
-            "metrics": {
-                "Validity": 100.0,
-                "ConnV": 100.0,
-                "ConnectedValidity": 100.0,
-                "BBB%": 76.5,
-                "BondsPerMol": 24.2,
-                "QED": 0.54,
-            },
+            "metrics": ref,
             "sdf_path": None,
             "smiles_path": None,
             "clump_path": None,
             "has_molecules": True,
             "is_reference": True,
-            "validity": 100.0,
-            "conn_v": 100.0,
-            "bbb_pct": 76.5,
-            "bonds_per_mol": 24.2,
+            "validity": ref.get("Validity"),
+            "conn_v": ref.get("ConnectedValidity"),
+            "bbb_pct": ref.get("BBB%"),
+            "bonds_per_mol": ref.get("BondsPerMol"),
         }
 
     # 2. Discover outputs runs with metrics or SDFs

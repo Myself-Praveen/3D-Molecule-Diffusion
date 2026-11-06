@@ -227,21 +227,34 @@ if selected_run != "None":
     cur = runs[selected_run]
     m = cur.get("metrics", {})
     
+    def _num(key):
+        """Measured value or None. `or` would treat a real 0.0 as missing."""
+        value = m.get(key)
+        return value if isinstance(value, (int, float)) else None
+
+    def _show(value, spec):
+        return "not measured" if value is None else format(value, spec)
+
+    def _suffix(value, spec, suffix):
+        return "—" if value is None else format(value, spec) + suffix
+
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("Chemical Validity", f"{m.get('Validity', 0.0):.1f}%", help="Percentage of chemically parseable molecules (RDKit)")
+        st.metric("Chemical Validity", _suffix(_num('Validity'), '.1f', '%'), help="Percentage of chemically parseable molecules (RDKit)")
     with col2:
-        conn_v = m.get('ConnV') or m.get('ConnectedValidity', 0.0)
-        st.metric("Connected Validity", f"{conn_v:.2f}%", delta=f"{conn_v - 8.75:.2f}% vs Base" if not cur.get("is_reference") else "Reference", help="Percentage of molecules that are single-fragment valid entities")
+        conn_v = _num('ConnV')
+        if conn_v is None:
+            conn_v = _num('ConnectedValidity')
+        st.metric("Connected Validity", _suffix(conn_v, '.2f', '%'), help="Percentage of molecules that are single-fragment valid entities")
     with col3:
-        bonds = m.get('BondsPerMol', 0.0)
-        st.metric("Bonds / Molecule", f"{bonds:.1f}", delta="-5.4 vs Clump" if bonds < 32 else "+12.4 (Clumped)", delta_color="inverse", help="Mean bonds per molecule (Target <= 32.0)")
+        bpa = _num('BondsPerAtom')
+        st.metric("Bonds / Atom", _show(bpa, '.3f'), help="Mean bonds per atom over valid molecules (real BBBP ≈ 1.035). Absolute bonds/mol is only meaningful next to the atom count.")
     with col4:
-        bbb = m.get('BBB%', 0.0)
-        st.metric("BBB+ Permeability", f"{bbb:.1f}%", help="Oracle-predicted Blood-Brain Barrier penetration rate")
+        bbb = _num('BBB%')
+        yield_pct = _num('BBB_yield%')
+        st.metric("BBB+ Permeability", _suffix(bbb, '.1f', '%'), help="Oracle-predicted BBB penetration among VALID molecules" + (f"; {yield_pct:.1f}% of all generated samples" if yield_pct is not None else ""))
     with col5:
-        qed = m.get('QED', 0.0)
-        st.metric("Mean QED Score", f"{qed:.3f}", help="Quantitative Estimate of Drug-likeness (0 to 1)")
+        st.metric("Mean QED Score", _show(_num('QED'), '.3f'), help="Quantitative Estimate of Drug-likeness (0 to 1)")
 
 st.markdown("---")
 

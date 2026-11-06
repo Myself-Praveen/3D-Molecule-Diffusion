@@ -107,8 +107,8 @@ training:
 
 generation:
   eval_every: 100               # 39 quick_valid probes over the budget
-  num_samples: 16
-  ddim_steps: 20
+  num_samples: 64          # fix.md F11: a 16-molecule probe cannot rank checkpoints
+  ddim_steps: 50           # match the eval sampler, not a 20-step shortcut
   # Test-time physical valence guidance (contract bbb-valence-dpo-v2.1).
   # Left at 0.0 so the existing V5 eval recipes are unchanged; the CLI flags
   # in generate_and_eval.py are the supported way to enable it per run.

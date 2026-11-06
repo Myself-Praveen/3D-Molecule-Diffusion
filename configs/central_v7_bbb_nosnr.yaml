@@ -84,10 +84,15 @@ training:
   min_snr_gamma: 0.0          # R7: no down-weighting of the low-noise steps
   rotation_augment_prob: 0.5
 
+# fix.md F11: the probe feeds checkpoint selection, so it must be powered.
+# 16 molecules at 20 DDIM steps is a different sampler from the eval
+# protocol and its 95 % CI spans ~25 points; V7-nosnr's epoch 3400 was saved
+# on a 6.2 %-validity probe that measured 33.0 % validity / 0 % connectivity
+# at 200 samples.
 generation:
   eval_every: 100             # the probe feeds checkpoint selection
-  num_samples: 16
-  ddim_steps: 20
+  num_samples: 64
+  ddim_steps: 50
 
 bbb_classifier:
   checkpoint: models/bbb_oracle.pt
@@ -95,4 +100,4 @@ bbb_classifier:
 checkpoint:
   dir: checkpoints/central_v7_bbb_nosnr
   save_every: 200
-  select_by: generation        # R3: ConnFrac - NN-outside-window, not val loss
+  select_by: generation        # (validity/100)*conn_frac - nn_outside, not val loss

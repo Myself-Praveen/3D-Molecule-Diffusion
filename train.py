@@ -129,8 +129,12 @@ def _quick_validity(
     lower val loss and 25x worse connectivity).
 
     Returns:
-        ``{"validity", "conn_frac", "nn_outside", "score"}`` in percent.
-        ``score`` is ``conn_frac - nn_outside`` (higher is better).
+        ``{"validity", "conn_frac", "nn_outside", "score", "n_valid",
+        "n_samples"}`` in percent. ``score`` is the expected per-sample yield
+        ``(validity/100) * conn_frac - nn_outside`` — validity GATES
+        connectivity, so a model that connects the handful of molecules it
+        can parse is not rewarded for it (fix.md F11). ``-inf`` when fewer
+        than 4 molecules are valid: nothing was measured.
     """
     import numpy as np
     from rdkit import Chem
@@ -139,8 +143,11 @@ def _quick_validity(
     from src.utils.evaluation import (
         coords_and_types_to_mol,
         nn_outside_window_pct,
-        validity,
     )
+
+    # fix.md F11: a probe that cannot produce this many valid molecules has
+    # not measured anything, whatever its connectivity rate says.
+    _PROBE_MIN_VALID = 4
 
     model.eval()
     if atom_count_pool:
@@ -158,6 +165,7 @@ def _quick_validity(
         return {
             "validity": 0.0, "conn_frac": 0.0,
             "nn_outside": float("nan"), "score": float("-inf"),
+            "n_valid": 0, "n_samples": num_samples,
         }
 
     mols = []
@@ -171,6 +179,7 @@ def _quick_validity(
         off += count
 
     valid_mols = [m for m in mols if m is not None]
+    n_valid = len(valid_mols)
     connected = 0
     for m in valid_mols:
         try:
@@ -178,13 +187,25 @@ def _quick_validity(
                 connected += 1
         except Exception:
             pass
-    conn_frac = 100.0 * connected / max(len(valid_mols), 1)
-    nn_outside = float(np.mean(orphan_pcts)) if orphan_pcts else float("nan")
+    validity_pct = 100.0 * n_valid / max(len(mols), 1)
+    conn_frac = 100.0 * connected / max(n_valid, 1)
+    finite_orphans = [p for p in orphan_pcts if np.isfinite(p)]
+    nn_outside = (float(np.mean(finite_orphans))
+                  if finite_orphans else float("nan"))
+    # EXPECTED YIELD, not a conditional rate: validity gates connectivity.
+    # The old score ``conn_frac - nn_outside`` was computed over valid
+    # molecules only, so 16-of-200 connected scored identically to 16-of-16
+    # — it saved V7-nosnr's epoch 3400 on a 6.2 %-valid probe (fix.md F11).
+    score = (validity_pct / 100.0) * conn_frac - nn_outside
+    if n_valid < _PROBE_MIN_VALID:
+        score = float("-inf")
     return {
-        "validity": float(validity(mols)) * 100.0,
+        "validity": validity_pct,
         "conn_frac": conn_frac,
         "nn_outside": nn_outside,
-        "score": conn_frac - nn_outside,
+        "score": score,
+        "n_valid": n_valid,
+        "n_samples": len(mols),
     }
 
 
@@ -907,6 +928,16 @@ def train_diffusion(
                     "val_loss": best_val_loss,
                     "best_gen_score": best_gen_score,
                     "gen_metrics": quick,
+                    # fix.md F11: the probe settings are part of the
+                    # selection, so best.pt records what chose it.
+                    "probe_settings": {
+                        "num_samples": int(gen_cfg.get("num_samples", 16)),
+                        "ddim_steps": int(gen_cfg.get("ddim_steps", 20)),
+                        "size_source": ("training_histogram"
+                                        if atom_count_pool else "qm9_18"),
+                        "score": "(validity/100)*conn_frac - nn_outside; "
+                                 "-inf when n_valid < 4",
+                    },
                     "epochs_no_improve": epochs_no_improve,
                     "rng_random": random.getstate(),
                     "rng_torch": torch.get_rng_state(),
@@ -917,7 +948,9 @@ def train_diffusion(
             if select_by == "generation" and quick is not None:
                 print(
                     f"  ✓ Saved best model (gen_score={best_gen_score:.1f} "
-                    f"[conn={quick['conn_frac']:.1f}% "
+                    f"[valid={quick['validity']:.1f}% "
+                    f"n={quick.get('n_valid', '?')}/{quick.get('n_samples', '?')} "
+                    f"conn={quick['conn_frac']:.1f}% "
                     f"nn_out={quick['nn_outside']:.1f}%], "
                     f"val_loss={best_val_loss:.4f})"
                 )

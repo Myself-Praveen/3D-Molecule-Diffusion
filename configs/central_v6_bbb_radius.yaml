@@ -85,8 +85,8 @@ training:
 
 generation:
   eval_every: 100
-  num_samples: 16
-  ddim_steps: 20
+  num_samples: 64          # fix.md F11: a 16-molecule probe cannot rank checkpoints
+  ddim_steps: 50           # match the eval sampler, not a 20-step shortcut
 
 bbb_classifier:
   checkpoint: models/bbb_oracle.pt

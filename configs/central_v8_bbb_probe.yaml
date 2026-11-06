@@ -1,0 +1,107 @@
+# V8 BBB (fix.md F11): the V7 no-min-SNR recipe re-run under a probe that can
+# actually rank checkpoints.
+#
+# Why a re-run instead of re-using V7: `best.pt` for central_v7_bbb_nosnr was
+# selected by a 16-molecule, 20-step probe scoring `conn_frac - nn_outside`
+# over VALID molecules only. Epoch 3400 was saved at probe validity 6.2 % and
+# then measured 33.0 % validity / 0.0 % connectivity at 200 samples — the
+# checkpoint was chosen on noise, so the arm's "disproved" verdict was never a
+# measurement of the recipe.
+#
+# The recipe (model, diffusion, training) is BIT-IDENTICAL to
+# configs/central_v7_bbb_nosnr.yaml. Three things change, all of them
+# measurement:
+#
+#   1. generation.num_samples 16 -> 64 and ddim_steps 20 -> 50: a 16-sample
+#      probe has a 95 % CI ~25 points wide, and 20 DDIM steps is a different
+#      sampler from the eval protocol (DDIM 200 / eta 1.0 / quadratic).
+#   2. checkpoint.select_by: generation now ranks on expected yield,
+#      (validity/100) * conn_frac - nn_outside, so validity GATES
+#      connectivity, and a probe with fewer than 4 valid molecules scores -inf.
+#   3. a separate checkpoint dir, so V7's broken-selection best.pt stays on
+#      disk as the audit trail.
+#
+# One arm is ~33 h CPU at 8 threads (the host's measured optimum).
+#
+#   bash scripts/run_v8_bbb_probe.sh                            # full arm
+#   bash scripts/run_v8_bbb_probe.sh --resume --run_epochs 400  # 1-h chunks
+
+seed: 42
+
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  cond_dim: 32
+  num_cond_classes: 2
+  use_attention: true
+  self_condition: true
+  coord_refine_layers: 2
+  knn_schedule: [4, 4, 8, 8, 12, 12, 16, 16]
+
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+
+# DPO stays gated behind the corrected R1 geometry gate (rescueplan.md §2).
+rl:
+  enabled: false
+  pair_file: outputs/rl_pairs/pairs.pt
+  init_checkpoint: checkpoints/central_v8_bbb_probe/best.pt
+  dpo_ref_checkpoint: checkpoints/central_v8_bbb_probe/best.pt
+  dpo_weight: 0.1
+  dpo_beta: 0.1
+  dpo_batch_size: 32
+  dpo_epochs: 100
+  dpo_lr: 1.0e-5
+  dpo_pair_type: seed_matched
+
+diffusion:
+  num_steps: 1000
+  schedule: cosine
+  beta_start: 1.0e-4
+  beta_end: 0.02
+  objective: eps
+
+training:
+  epochs: 3900
+  batch_size: 32
+  lr: 2.0e-4
+  warmup_epochs: 20
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 8
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 3900
+  ema_decay: 0.9999
+  ema_warmup_steps: 2000
+  min_snr_gamma: 0.0          # R7: no down-weighting of the low-noise steps
+  rotation_augment_prob: 0.5
+
+# fix.md F11: the probe feeds checkpoint selection, so it must be powered.
+generation:
+  eval_every: 100             # the probe feeds checkpoint selection
+  num_samples: 64
+  ddim_steps: 50
+
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+
+checkpoint:
+  dir: checkpoints/central_v8_bbb_probe
+  save_every: 200
+  select_by: generation        # (validity/100)*conn_frac - nn_outside, not val loss

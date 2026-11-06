@@ -33,10 +33,17 @@ class TestConnectivity:
         assert out["BondsPerMol"] == 0.0
 
     def test_empty(self):
-        assert connectivity([]) == {
-            "ConnectedValidity": 0.0, "BondsPerMol": 0.0, "ConnectedFrac": 0.0,
-        }
-        assert connectivity([None])["ConnectedValidity"] == 0.0
+        # fix.md F10: an empty eval has no measurement at all, and a sample
+        # with no valid molecule has rates but no means. Neither is 0.0.
+        empty = connectivity([])
+        assert empty["ConnectedValidity"] is None
+        assert empty["BondsPerMol"] is None
+        assert empty["n_total"] == 0
+
+        no_valid = connectivity([None])
+        assert no_valid["ConnectedValidity"] == 0.0  # 0 of 1 samples
+        assert no_valid["BondsPerMol"] is None       # mean over nothing
+        assert no_valid["n_valid"] == 0
 
 
 class TestRelax:

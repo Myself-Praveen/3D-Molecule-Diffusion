@@ -214,10 +214,13 @@ def flatten_report(report: dict) -> dict[str, float]:
     Keys are unique across stages and disjoint from ``evaluate()``'s keys,
     so an eval can merge them directly (``metrics.update(...)``).
     """
+    # The gate's bookkeeping counts are prefixed: ``evaluate()`` now owns
+    # ``n_total`` / ``n_valid`` / ``n_bbb`` (fix.md F5), and an unprefixed
+    # name here would overwrite the eval's denominators on merge.
     flat: dict[str, float] = {
-        "n_total": report["n_total"],
-        "n_valid": report["n_valid"],
-        "n_3d": report["n_3d"],
+        "Gate_n_total": report["n_total"],
+        "Gate_n_valid": report["n_valid"],
+        "Gate_n_3d": report["n_3d"],
     }
     for key, stage in report.items():
         if key.startswith("stage"):

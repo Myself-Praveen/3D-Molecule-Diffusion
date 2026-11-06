@@ -105,6 +105,95 @@ def get_bond_tolerance(z_i: int, z_j: int,
 
 
 # ---------------------------------------------------------------------------
+# Reporting contract (fix.md F5-F8): counts, CIs, size-normalized geometry
+# ---------------------------------------------------------------------------
+
+#: Bonds per atom of real BBBP molecules, measured by this repo's own ruler
+#: (`load_bbbp` -> `coords_and_types_to_mol` -> mean bonds / mean atoms).
+#: 47.3 bonds / 45.9 atoms. Every bond verdict is relative to THIS, never to
+#: QM9's absolute ~19 bonds/mol (fix.md F2: that comparison inverted the
+#: "over-bonded soup" diagnosis — these models are UNDER-bonded).
+BONDS_PER_ATOM_REFERENCE: float = 1.035
+
+#: Means over fewer than this many valid molecules are not reported as
+#: measurements (`print_metrics` renders them ``n/a (n=…)``). Rates whose
+#: denominator is all generated samples stay valid at any n.
+MIN_REPORTABLE_N: int = 50
+
+#: Keys that are counts, never suppressed for small n.
+COUNTS: tuple[str, ...] = ("n_valid", "n_total", "n_bbb")
+
+#: Rates whose denominator is *all generated samples* (or a structural
+#: ratio), so they remain meaningful at any n.
+TOTAL_RATE_KEYS: tuple[str, ...] = (
+    "Validity", "Validity_ci95", "ConnectedValidity",
+    "ConnectedValidity_ci95", "ConnectedFrac", "BBB%", "BBB%_ci95",
+    "BBB_yield%", "BBB_yield%_ci95", "AtomsRetained%",
+    "MeanAtoms_requested", "MeanAtoms_drawn",
+)
+
+#: Canonical column order for every table / LaTeX row. A stored row can go
+#: stale when a metric is patched after the fact (fix.md F8), so rows are
+#: *rendered* from this order instead of frozen at eval time.
+METRIC_ORDER: tuple[str, ...] = (
+    "Validity", "ConnectedValidity", "BBB%", "BBB_yield%",
+    "BondsPerAtom", "MeanAtoms", "AtomsRetained%", "FragmentsPerMol",
+    "NN_Outside%", "QED", "LogP", "IntDiv_p", "ScaffDiv",
+    "Uniqueness", "Novelty", "SNN", "ScaffCov", "Lipinski%",
+    "Veber%", "CNS_MPO", "n_valid", "n_total",
+)
+
+
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval in percent for ``k`` successes out of ``n``.
+
+    fix.md F6: no percentage is reported without one. Returns ``(nan, nan)``
+    when ``n == 0`` (nothing was measured, which is not 0 %).
+    """
+    if n <= 0:
+        return (float("nan"), float("nan"))
+    k = max(0, min(int(k), int(n)))
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (100.0 * max(0.0, centre - half),
+            100.0 * min(1.0, centre + half))
+
+
+def ks_two_sample(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """Two-sample Kolmogorov-Smirnov statistic (no scipy dependency).
+
+    fix.md F16: validity is a size-conditional rate, so the *surviving* size
+    distribution has to be compared against the one that was requested.
+    Returns ``None`` when either sample is empty.
+    """
+    a = sorted(float(x) for x in a)
+    b = sorted(float(x) for x in b)
+    if not a or not b:
+        return None
+    points = sorted(set(a) | set(b))
+    na, nb = len(a), len(b)
+    best = 0.0
+    ia = ib = 0
+    for x in points:
+        while ia < na and a[ia] <= x:
+            ia += 1
+        while ib < nb and b[ib] <= x:
+            ib += 1
+        best = max(best, abs(ia / na - ib / nb))
+    return float(best)
+
+
+def wilson_ci_or_none(k: int, n: int) -> list[float] | None:
+    """``wilson_ci`` as a JSON-safe list, or ``None`` when undefined."""
+    lo, hi = wilson_ci(k, n)
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return None
+    return [lo, hi]
+
+
+# ---------------------------------------------------------------------------
 # Molecule construction
 # ---------------------------------------------------------------------------
 
@@ -119,6 +208,7 @@ def coords_and_types_to_mol(
     max_bonds_ratio: float = 0.0,
     perceive_orders: bool = False,
     keep_largest_fragment: bool = False,
+    stats: dict | None = None,
 ) -> Chem.Mol | None:
     """Build an RDKit Mol from 3D coordinates and atom types.
 
@@ -162,16 +252,34 @@ def coords_and_types_to_mol(
             component (satellite specks are pruned), regardless of
             ``min_fragment_atoms``. Off by default; a post-hoc correction,
             not a generation fix.
+        stats: optional dict filled in place with the atom accounting of this
+            call (fix.md F3): ``requested_atoms``, ``kept_atoms``,
+            ``pruned_atoms`` and ``pruned_fraction``. Post-processing that
+            DELETES atoms (`keep_largest_fragment`, `min_fragment_atoms`) is
+            otherwise invisible in every downstream metric — R5-best's 59.5 %
+            "validity" came from pruning 40 % of each molecule's atoms.
 
     Returns:
         An RDKit ``Mol`` or ``None`` if construction/sanitization fails
         (or the ``max_bonds_ratio`` gate rejects the molecule).
     """
+    requested_atoms = len(atomic_numbers)
+
+    def _record(kept: int) -> None:
+        if stats is None:
+            return
+        stats["requested_atoms"] = requested_atoms
+        stats["kept_atoms"] = int(kept)
+        stats["pruned_atoms"] = requested_atoms - int(kept)
+        stats["pruned_fraction"] = (requested_atoms - int(kept)) / max(
+            requested_atoms, 1)
+
     valid_atoms: list[int] = [  # indices into pos/atomic_numbers
         i for i, z in enumerate(atomic_numbers)
         if _Z_TO_SYMBOL.get(int(z), "*") != "*"
     ]
     if not valid_atoms:
+        _record(0)
         return None
 
     # Connectivity post-processing: prune small provisional fragments BEFORE
@@ -187,6 +295,7 @@ def coords_and_types_to_mol(
             bond_logits = None  # dense logits index the UNpruned atom set
         valid_atoms = kept
         if not valid_atoms:
+            _record(0)
             return None
 
     mol = Chem.RWMol()
@@ -196,6 +305,7 @@ def coords_and_types_to_mol(
         mol.AddAtom(atom)
 
     if mol.GetNumAtoms() == 0:
+        _record(0)
         return None
 
     # Determine connectivity
@@ -211,6 +321,7 @@ def coords_and_types_to_mol(
         try:
             Chem.SanitizeMol(mol)
         except Exception:
+            _record(0)
             return None
 
     # Embed 3D coordinates
@@ -240,7 +351,9 @@ def coords_and_types_to_mol(
     if max_bonds_ratio > 0.0:
         n_atoms = mol.GetNumAtoms()
         if mol.GetNumBonds() > max_bonds_ratio * 0.95 * n_atoms:
+            _record(0)
             return None
+    _record(mol.GetNumAtoms())
     return mol
 
 
@@ -453,18 +566,25 @@ def uniqueness(mols: Sequence[Chem.Mol | None]) -> float:
 
 
 def novelty(mols: Sequence[Chem.Mol | None], train_smiles: set[str]) -> float:
-    """Fraction of valid unique molecules not in the training set."""
+    """Fraction of valid *unique* molecules not in the training set.
+
+    MOSES definition (fix.md F14): numerator and denominator both count
+    unique SMILES. The previous version counted novel molecules but divided
+    by ALL valid molecules, so the number was wrong the moment duplicates
+    appeared (masked today only because every arm reports 100 % uniqueness).
+    """
     valid = [m for m in mols if m is not None]
     if not valid:
         return 0.0
-    novel = 0
-    seen: set[str] = set()
+    unique: set[str] = set()
     for m in valid:
         s = Chem.MolToSmiles(m)
-        if s and s not in seen and s not in train_smiles:
-            novel += 1
-            seen.add(s)
-    return novel / len(valid)
+        if s:
+            unique.add(s)
+    if not unique:
+        return 0.0
+    novel = sum(1 for s in unique if s not in train_smiles)
+    return novel / len(unique)
 
 
 def internal_diversity(mols: Sequence[Chem.Mol | None], radius: int = 2) -> float:
@@ -566,8 +686,10 @@ def relax_molecule(mol: Chem.Mol | None, max_iters: int = 200) -> Chem.Mol | Non
     return mol
 
 
-def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
-    """Fragment-aware geometry metrics over valid molecules.
+def connectivity(mols: Sequence[Chem.Mol | None],
+                 reference_bonds_per_atom: float | None = None,
+                 ) -> dict[str, float | int | list[float] | None]:
+    """Fragment-aware, size-normalized geometry metrics over valid molecules.
 
     Plain ``Validity`` (RDKit sanitization) passes disconnected single atoms,
     so a model emitting fragment soup can score ~99% while generating zero
@@ -575,27 +697,102 @@ def connectivity(mols: Sequence[Chem.Mol | None]) -> dict[str, float]:
 
     - ``ConnectedValidity``: % of ALL generated molecules that are valid AND
       a single connected fragment (the honest headline number).
-    - ``BondsPerMol``: mean bond count over valid molecules (QM9 truth ~19
-      for 18-atom molecules; fragments score ~0-2, clumps ~26+).
+    - ``BondsPerAtom``: mean bonds / mean atoms over valid molecules. THIS is
+      the comparable bond number (real BBBP = 1.035). ``BondsPerMol`` is an
+      absolute count that only means something next to ``MeanAtoms`` — it was
+      previously compared to QM9's ~19 for 18-atom molecules while these arms
+      generate 46-atom BBBP molecules (fix.md F2).
+    - ``BondsPerAtom_rel``: ``BondsPerAtom / reference`` (1.0 = real).
     - ``ConnectedFrac``: % of valid molecules that are single-fragment.
+    - ``FragmentsPerMol``: mean connected components per valid molecule.
+
+    ``None`` means *not measured* (no valid molecule); ``0.0`` means a
+    measured zero. ``ConnectedValidity`` stays defined whenever any sample
+    exists — it is a rate over ``n_total`` — but ``ConnectedFrac`` and every
+    mean are undefined without a valid molecule (fix.md F10).
     """
     valid = [m for m in mols if m is not None]
     total = len(mols)
-    if not valid or total == 0:
-        return {"ConnectedValidity": 0.0, "BondsPerMol": 0.0, "ConnectedFrac": 0.0}
-    bonds, connected = [], 0
+    if total == 0:
+        return {
+            "ConnectedValidity": None, "ConnectedValidity_ci95": None,
+            "BondsPerMol": None, "BondsPerAtom": None,
+            "BondsPerAtom_rel": None, "MeanAtoms": None,
+            "ConnectedFrac": None, "FragmentsPerMol": None,
+            "n_valid": 0, "n_total": 0,
+        }
+    bonds: list[int] = []
+    atoms: list[int] = []
+    frags: list[int] = []
+    connected = 0
     for m in valid:
         try:
-            bonds.append(m.GetNumBonds())
-            if len(Chem.GetMolFrags(m)) == 1:
-                connected += 1
+            atoms.append(int(m.GetNumAtoms()))
+            bonds.append(int(m.GetNumBonds()))
+            n_frag = len(Chem.GetMolFrags(m))
+            frags.append(int(n_frag))
+            connected += int(n_frag == 1)
         except Exception:
-            bonds.append(0)
+            continue
+
+    mean_atoms = float(np.mean(atoms)) if atoms else None
+    mean_bonds = float(np.mean(bonds)) if bonds else None
+    bpa = (mean_bonds / mean_atoms
+           if mean_bonds is not None and mean_atoms else None)
+    ref = (reference_bonds_per_atom
+           if reference_bonds_per_atom is not None
+           else BONDS_PER_ATOM_REFERENCE)
     return {
         "ConnectedValidity": 100.0 * connected / total,
-        "BondsPerMol": float(sum(bonds) / len(bonds)),
-        "ConnectedFrac": 100.0 * connected / len(valid),
+        "ConnectedValidity_ci95": wilson_ci_or_none(connected, total),
+        "BondsPerMol": mean_bonds,
+        "BondsPerAtom": bpa,
+        "BondsPerAtom_rel": (bpa / ref) if bpa is not None and ref else None,
+        "MeanAtoms": mean_atoms,
+        "ConnectedFrac": (100.0 * connected / len(valid)) if valid else None,
+        "FragmentsPerMol": float(np.mean(frags)) if frags else None,
+        "n_valid": len(valid),
+        "n_total": total,
     }
+
+
+def _nearest_neighbour_stats(
+    pos: np.ndarray,
+    atomic_numbers: np.ndarray,
+    bond_tolerance: float | None = None,
+) -> tuple[float | None, float | None]:
+    """``(NN-outside %, NN median distance Å)`` for one molecule.
+
+    Returns ``(None, None)`` when the molecule has fewer than two atoms: a
+    single atom has no nearest neighbour, so it cannot be scored 0 %
+    (fix.md F13). Atoms whose element is absent from the covalent-radii table
+    CANNOT bond by construction, so they count as outside instead of being
+    skipped.
+    """
+    pos = np.asarray(pos, dtype=float)
+    z = np.asarray(atomic_numbers, dtype=int).reshape(-1)
+    n = len(z)
+    if n < 2:
+        return (None, None)
+    diff = pos[:, None, :] - pos[None, :, :]
+    dist = np.sqrt((diff ** 2).sum(-1))
+    np.fill_diagonal(dist, np.inf)
+    nearest = dist.min(axis=1)
+    nearest_index = dist.argmin(axis=1)
+
+    outside = 0
+    for i in range(n):
+        j = int(nearest_index[i])
+        ri = _COVALENT_RADII.get(int(z[i]))
+        rj = _COVALENT_RADII.get(int(z[j]))
+        if ri is None or rj is None:
+            outside += 1  # cannot bond through the ruler at all
+            continue
+        window = ri + rj + get_bond_tolerance(
+            int(z[i]), int(z[j]), cap=bond_tolerance)
+        if nearest[i] > window:
+            outside += 1
+    return (100.0 * outside / n, float(np.median(nearest)))
 
 
 def nn_outside_window_pct(
@@ -617,31 +814,70 @@ def nn_outside_window_pct(
         bond_tolerance: optional tighten-cap, exactly as the bond builder.
 
     Returns:
-        Percentage in ``[0, 100]``; 0.0 for a single atom.
+        Percentage in ``[0, 100]``; ``nan`` for fewer than two atoms or an
+        empty input (undefined, not a perfect score).
     """
-    pos = np.asarray(pos, dtype=float)
-    z = np.asarray(atomic_numbers, dtype=int).reshape(-1)
-    n = len(z)
-    if n < 2:
-        return 0.0
-    diff = pos[:, None, :] - pos[None, :, :]
-    dist = np.sqrt((diff ** 2).sum(-1))
-    np.fill_diagonal(dist, np.inf)
-    nearest = dist.min(axis=1)
-    nearest_index = dist.argmin(axis=1)
+    pct, _ = _nearest_neighbour_stats(pos, atomic_numbers, bond_tolerance)
+    return float("nan") if pct is None else pct
 
-    outside = 0
-    for i in range(n):
-        j = int(nearest_index[i])
-        ri = _COVALENT_RADII.get(int(z[i]))
-        rj = _COVALENT_RADII.get(int(z[j]))
-        if ri is None or rj is None:
+
+def geometry_metrics(
+    mols: Sequence[Chem.Mol | None],
+    bond_tolerance: float | None = None,
+) -> dict[str, float | None]:
+    """The geometry axis, inside ``metrics.json`` (fix.md F12).
+
+    ``bonds_per_atom``, ``nn_outside_window_pct``, ``nn_p50`` and
+    ``radius_of_gyration`` used to live only in ``clump.json``, produced by a
+    second script that frequently was not run — so half the rows of the
+    rescue summary were ``nan``. They are computed here from the embedded
+    conformer (already present on every built molecule) so one eval run
+    carries both rulers.
+
+    ``NN_Outside%`` is the per-molecule mean (each molecule weighted once).
+    """
+    outs: list[float] = []
+    p50s: list[float] = []
+    rgs: list[float] = []
+    for m in mols:
+        if m is None:
             continue
-        window = ri + rj + get_bond_tolerance(
-            int(z[i]), int(z[j]), cap=bond_tolerance)
-        if nearest[i] > window:
-            outside += 1
-    return 100.0 * outside / n
+        try:
+            conf = m.GetConformer()
+            n = m.GetNumAtoms()
+            pos = np.array([[conf.GetAtomPosition(i).x,
+                             conf.GetAtomPosition(i).y,
+                             conf.GetAtomPosition(i).z] for i in range(n)])
+            z = np.array([a.GetAtomicNum() for a in m.GetAtoms()], dtype=int)
+        except Exception:
+            continue
+        pct, p50 = _nearest_neighbour_stats(pos, z, bond_tolerance)
+        if pct is not None:
+            outs.append(pct)
+            p50s.append(p50)
+            centre = pos.mean(axis=0)
+            rgs.append(float(np.sqrt(((pos - centre) ** 2).sum(axis=1).mean())))
+    return {
+        "NN_Outside%": float(np.mean(outs)) if outs else None,
+        "NN_p50": float(np.mean(p50s)) if p50s else None,
+        "Rg": float(np.mean(rgs)) if rgs else None,
+    }
+
+
+def geometry_only_metrics(
+    mols: Sequence[Chem.Mol | None],
+    bond_tolerance: float | None = None,
+) -> dict[str, float | None]:
+    """The relaxed table's payload: geometry only (fix.md F7).
+
+    MMFF/UFF relaxation moves coordinates and nothing else: the bond graph,
+    and therefore ``Validity``, ``ConnectedValidity``, ``BondsPerMol``,
+    ``QED``, ``BBB%`` and every scaffold metric, is fixed at construction.
+    Reporting those keys a second time produced a byte-identical duplicate
+    table whose only real effect was to let one stale copy drift
+    (``eval_pre_rl``: BBB 34.17 % raw vs 0.0 % relaxed).
+    """
+    return geometry_metrics(mols, bond_tolerance=bond_tolerance)
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +909,45 @@ def bbb_permeability_rate(mols, classifier) -> float:
     except Exception:
         return 0.0
     return float(sum(1 for p in probs if p > 0.5) / len(valid))
+
+
+def bbb_rates(mols, classifier) -> dict[str, float | int | list[float] | None]:
+    """BBB+ rate over valid molecules AND over all generated samples.
+
+    fix.md F4/F9: ``BBB%`` divided by the *valid* count, so two arms with 40 %
+    and 5 % validity were compared on denominators that differ by 8x —
+    ``34.2 %`` of 398 vs ``1.4 %`` of 503 hid a 19x difference in molecules a
+    lab actually receives. ``BBB_yield%`` is the comparable number.
+
+    ``None`` means "not measured" (no oracle); there is no ``-1`` sentinel
+    that can leak into arithmetic or be swallowed by a falsy check.
+    """
+    valid = [m for m in mols if m is not None]
+    n_total = len(mols)
+    if classifier is None:
+        return {"BBB%": None, "BBB%_ci95": None, "BBB_yield%": None,
+                "BBB_yield%_ci95": None, "n_bbb": None,
+                "n_valid": len(valid), "n_total": n_total}
+    if not valid:
+        return {"BBB%": None, "BBB%_ci95": None, "BBB_yield%": 0.0,
+                "BBB_yield%_ci95": wilson_ci_or_none(0, n_total),
+                "n_bbb": 0, "n_valid": 0, "n_total": n_total}
+    try:
+        probs = classifier.predict_batch(valid)
+    except Exception:
+        return {"BBB%": None, "BBB%_ci95": None, "BBB_yield%": None,
+                "BBB_yield%_ci95": None, "n_bbb": None,
+                "n_valid": len(valid), "n_total": n_total}
+    k = int(sum(1 for p in probs if p > 0.5))
+    return {
+        "BBB%": 100.0 * k / len(valid),
+        "BBB%_ci95": wilson_ci_or_none(k, len(valid)),
+        "BBB_yield%": 100.0 * k / n_total if n_total else None,
+        "BBB_yield%_ci95": wilson_ci_or_none(k, n_total),
+        "n_bbb": k,
+        "n_valid": len(valid),
+        "n_total": n_total,
+    }
 
 
 def scaffold_diversity(mols) -> float:
@@ -780,35 +1055,127 @@ def evaluate(
     train_smiles: set[str],
     train_mols: Sequence[Chem.Mol],
     bbb_classifier=None,
-) -> dict[str, float]:
-    """Run the full MOSES + BBB metric suite and return a dict of results."""
-    return {
-        "Validity": validity(mols) * 100.0,
+    *,
+    stats: Sequence[dict] | None = None,
+    reference: dict | None = None,
+) -> dict:
+    """Run the full MOSES + BBB + geometry metric suite (schema v2).
+
+    Every rate carries its denominator (and a Wilson CI), every mean carries
+    the count it was taken over, and unmeasured quantities are ``None``
+    instead of a sentinel or a fabricated 0.
+
+    Args:
+        mols: generated molecules, ``None`` for construction failures.
+        train_smiles / train_mols: the reference set (fix.md F1: 1628 BBBP
+            molecules parsed from SMILES, not the 20 that survived the old
+            distance-only converter).
+        bbb_classifier: optional BBB oracle.
+        stats: per-sample ``{requested_atoms, kept_atoms}`` dicts from
+            ``coords_and_types_to_mol(stats=...)``; enables
+            ``AtomsRetained%`` and ``SizeMatch_KS`` (fix.md F3/F16).
+        reference: reference-set geometry (``BondsPerAtom`` etc.) used for the
+            explicit ``BondsPerAtom_rel`` ratio.
+    """
+    valid = [m for m in mols if m is not None]
+    n_total = len(mols)
+    n_valid = len(valid)
+
+    out: dict = {
+        "Validity": (100.0 * n_valid / n_total) if n_total else None,
+        "Validity_ci95": wilson_ci_or_none(n_valid, n_total),
         "Uniqueness": uniqueness(mols) * 100.0,
-        "Novelty": novelty(mols, train_smiles) * 100.0,
+        "Novelty": (novelty(mols, train_smiles) * 100.0) if train_smiles else None,
         "IntDiv_p": internal_diversity(mols),
-        "QED": mean_qed(mols),
-        "LogP": mean_logp(mols),
-        "SNN": snn(mols, train_mols),
-        # Phase 4 BBB-specific metrics (-1 sentinel when no oracle given).
-        "BBB%": (bbb_permeability_rate(mols, bbb_classifier) * 100.0
-                 if bbb_classifier is not None else -1.0),
-        "ScaffDiv": scaffold_diversity(mols),
-        "ScaffCov": scaffold_coverage(mols, train_mols),
-        "Lipinski%": lipinski_pass_rate(mols) * 100.0,
-        "Veber%": veber_pass_rate(mols) * 100.0,
-        "CNS_MPO": cns_mpo_score(mols),
-        # Fragment-aware honesty metrics (dashboard + sweep configs read
-        # these keys from metrics.json).
-        **connectivity(mols),
+        "QED": mean_qed(mols) if valid else None,
+        "LogP": mean_logp(mols) if valid else None,
+        "SNN": (snn(mols, train_mols) if train_mols else None),
+        "ScaffDiv": scaffold_diversity(mols) if valid else None,
+        "ScaffCov": (scaffold_coverage(mols, train_mols)
+                     if train_mols else None),
+        "Lipinski%": lipinski_pass_rate(mols) * 100.0 if valid else None,
+        "Veber%": veber_pass_rate(mols) * 100.0 if valid else None,
+        "CNS_MPO": cns_mpo_score(mols) if valid else None,
     }
+    out.update(connectivity(
+        mols,
+        reference_bonds_per_atom=((reference or {}).get("BondsPerAtom")),
+    ))
+    out.update(geometry_metrics(mols))
+    out.update(bbb_rates(mols, bbb_classifier))
+
+    # F3: post-hoc atom deletion is part of the result, not a hidden step.
+    # The retention denominator is the atoms of molecules that were actually
+    # BUILT — a construction failure is Validity's business, and counting its
+    # atoms as "pruned" would silently understate retention.
+    drawn = [int(s["requested_atoms"]) for s in stats] if stats else []
+    pairs = ([(int(s["requested_atoms"]), int(s["kept_atoms"]))
+              for s, m in zip(stats, mols) if m is not None] if stats else [])
+    req_valid = [r for r, _ in pairs]
+    kept_valid = [k for _, k in pairs]
+    out["MeanAtoms_drawn"] = float(np.mean(drawn)) if drawn else None
+    out["MeanAtoms_requested"] = (float(np.mean(req_valid))
+                                  if req_valid else None)
+    out["AtomsRetained%"] = (100.0 * sum(kept_valid) / sum(req_valid)
+                             if req_valid and sum(req_valid) else None)
+    # F16: validity is size-conditional, so compare surviving sizes against
+    # the sizes that were requested.
+    out["SizeMatch_KS"] = (
+        ks_two_sample(req_valid, [m.GetNumAtoms() for m in valid])
+        if req_valid and valid else None)
+    return out
 
 
-def print_metrics(metrics: dict[str, float]) -> None:
-    """Pretty-print the evaluation results."""
-    print("=" * 50)
-    print(f"{'Metric':<20} {'Value':>10}")
-    print("-" * 50)
+def _fmt_value(v) -> str:
+    """One metric cell: floats at 4 dp, ``None`` as an em dash."""
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_fmt_value(x) for x in v) + "]"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return f"{v:.4f}"
+    return str(v)
+
+
+def latex_row(metrics: dict, order: Sequence[str] = METRIC_ORDER) -> str:
+    """Render a LaTeX table row from a metric dict (never stored).
+
+    fix.md F8: a row frozen at eval time goes stale as soon as a metric is
+    patched afterwards — ``eval_pre_rl`` still carries a row whose BBB column
+    reads 0.0000 while ``metrics`` says 34.17. Rendering from a canonical
+    order also means the column count no longer depends on which flags an
+    arm happened to use.
+    """
+    cells = ["---" if metrics.get(k) is None else _fmt_value(metrics.get(k))
+             for k in order]
+    return "  &  ".join(cells) + r" \\"
+
+
+def print_metrics(metrics: dict) -> None:
+    """Pretty-print the evaluation results, honest about denominators.
+
+    fix.md F5: means over 2 molecules were printed at 4 decimals next to
+    means over 1000. Anything averaged over fewer than
+    ``MIN_REPORTABLE_N`` valid molecules is rendered ``n/a (n=…)``.
+    """
+    n_valid = int(metrics.get("n_valid") or 0)
+    n_total = int(metrics.get("n_total") or 0)
+    small = n_valid < MIN_REPORTABLE_N
+    print("=" * 58)
+    print(f"{'Metric':<22} {'Value':>10}   n={n_valid}/{n_total}")
+    print("-" * 58)
     for k, v in metrics.items():
-        print(f"{k:<20} {v:>10.4f}")
-    print("=" * 50)
+        if (small and k not in TOTAL_RATE_KEYS and k not in COUNTS
+                and isinstance(v, float)):
+            shown = f"n/a (n={n_valid})"
+        else:
+            shown = _fmt_value(v)
+        print(f"{k:<22} {shown:>10}")
+    if small:
+        print(f"-" * 58)
+        print(f"  means suppressed: n_valid={n_valid} < {MIN_REPORTABLE_N}")
+    print("=" * 58)

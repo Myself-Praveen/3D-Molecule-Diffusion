@@ -22,7 +22,15 @@ from src.dataset import load_qm9
 from src.models.diffusion import CenteredDDPM, TypeDDPM
 from src.models.egnn import EquivariantGenerator
 from src.sampling import sample_molecules
-from src.utils.evaluation import coords_and_types_to_mol, evaluate, print_metrics
+from src.utils.evaluation import (
+    MIN_REPORTABLE_N,
+    coords_and_types_to_mol,
+    connectivity,
+    evaluate,
+    geometry_only_metrics,
+    latex_row,
+    print_metrics,
+)
 
 # NOTE (coord-fix era): the diffusion model indexes atom types by RAW ATOMIC
 # NUMBER (PyG QM9 ``z`` is {1:H, 6:C, 7:N, 8:O, 9:F}; classes 0,2-5 are dead).
@@ -73,6 +81,405 @@ def _sample_atom_counts(histogram: list[int], n: int, rng: np.random.Generator) 
     return rng.choice(histogram, size=n, replace=True).tolist()
 
 
+def _reference_mols_and_smiles(full_dataset) -> tuple[list, set[str], dict]:
+    """Canonical reference set for Novelty / SNN / ScaffCov (fix.md F1).
+
+    Bond orders come from the dataset SMILES. Coordinate perception is only
+    the fallback, and it uses the eval's own covalent-radii builder — the old
+    hard-coded ``dist < 2.0`` rule destroyed 98.8 % of BBBP (20 of 1628
+    molecules survived), so every Novelty/SNN/ScaffCov number in the record
+    was measured against 1.2 % of the training data.
+    """
+    mols: list = []
+    smiles: set[str] = set()
+    n_with_smiles = 0
+    n_smiles_parsed = 0
+    for data in full_dataset:
+        smi = getattr(data, "smiles", None)
+        mol = None
+        if smi:
+            n_with_smiles += 1
+            mol = Chem.MolFromSmiles(str(smi))
+            if mol is not None:
+                n_smiles_parsed += 1
+                # Hydrogen-inclusive, like the generated molecules: the
+                # model denoises every atom including H, so a reference that
+                # counted heavy atoms only would put MeanAtoms at 24 instead
+                # of the measured 45.9.
+                try:
+                    mol = Chem.AddHs(mol)
+                except Exception:
+                    pass
+        if mol is None:
+            mol = coords_and_types_to_mol(
+                data.pos.numpy(), data.z.numpy().astype(int))
+        if mol is None:
+            continue
+        mols.append(mol)
+        try:
+            smiles.add(Chem.MolToSmiles(mol))
+        except Exception:
+            continue
+    info = {
+        "requested": len(full_dataset),
+        "n": len(mols),
+        "coverage": (len(mols) / len(full_dataset)) if len(full_dataset) else 0.0,
+        "n_dataset_smiles": n_with_smiles,
+        "n_smiles_parsed": n_smiles_parsed,
+        "source": ("dataset_smiles" if n_smiles_parsed
+                   else "coordinate_perception"),
+    }
+    return mols, smiles, info
+
+
+def _load_oracle(args, ckpt_cfg: dict, cfg: dict, device):
+    """Resolve + load the BBB oracle. Returns ``(classifier, meta)``.
+
+    Explicit ``--bbb_oracle`` wins, else the checkpoint config's
+    ``bbb_classifier.checkpoint``, else the ``--config`` YAML's. The meta
+    block records the path and validation AUROC so a BBB% column can be
+    traced to the model that produced it (fix.md F9).
+    """
+    oracle_path = args.bbb_oracle
+    if not oracle_path:
+        for source in (ckpt_cfg, cfg):
+            candidate = (source.get("bbb_classifier") or {}).get("checkpoint")
+            if candidate:
+                oracle_path = str(candidate)
+                break
+    if oracle_path and not Path(oracle_path).exists():
+        if args.bbb_oracle:
+            raise FileNotFoundError(f"--bbb_oracle not found: {oracle_path}")
+        print(f"WARNING: config declares bbb_classifier.checkpoint="
+              f"{oracle_path} but it does not exist — BBB% disabled")
+        oracle_path = None
+    if not oracle_path:
+        return None, None
+    from src.models.bbb_classifier import BBBClassifier
+
+    bbb_ckpt = torch.load(oracle_path, map_location=device, weights_only=False)
+    classifier = BBBClassifier(
+        hidden_dim=int(bbb_ckpt.get("hidden_dim", 128))).to(device)
+    classifier.load_state_dict(bbb_ckpt["model_state_dict"])
+    classifier.eval()
+    auroc = bbb_ckpt.get("val_auroc")
+    print(f"BBB oracle loaded from {oracle_path} "
+          f"(val AUROC {auroc if auroc is not None else float('nan'):.4f})")
+    return classifier, {
+        "path": oracle_path,
+        "val_auroc": float(auroc) if auroc is not None else None,
+    }
+
+
+def _run_cfg(args, seed: int) -> dict:
+    """The exact protocol that produced a row, recorded in ``run``."""
+    return {
+        "checkpoint": args.checkpoint,
+        "num_samples": args.num_samples,
+        "ddim_steps": args.ddim_steps,
+        "eta": args.eta,
+        "seed": seed,
+        "step_schedule": args.step_schedule,
+        "relax": args.relax,
+        "type_temperature": args.type_temperature,
+        "steric_weight": args.steric_weight,
+        "steric_start_frac": args.steric_start_frac,
+        "steric_sigma_scale": args.steric_sigma_scale,
+        "steric_k_rep": args.steric_k_rep,
+        "steric_r_clash": args.steric_r_clash,
+        "valence_weight": args.valence_weight,
+        "valence_start_frac": args.valence_start_frac,
+        "valence_tau": args.valence_tau,
+        "valence_covalent_factor": args.valence_covalent_factor,
+        "valence_k_val": args.valence_k_val,
+        "valence_max_step": args.valence_max_step,
+        "connectivity_weight": args.connectivity_weight,
+        "connectivity_start_frac": args.connectivity_start_frac,
+        "connectivity_window_pad": args.connectivity_window_pad,
+        "connectivity_k_att": args.connectivity_k_att,
+        "connectivity_max_step": args.connectivity_max_step,
+        "coord_temperature": args.coord_temperature,
+        "keep_largest_fragment": args.keep_largest_fragment,
+        "min_fragment_atoms": args.min_fragment_atoms,
+        "bond_tolerance": args.bond_tolerance,
+        "max_bonds_ratio": args.max_bonds_ratio,
+        "perceive_bonds": args.perceive_bonds,
+        "min_qed": args.min_qed,
+        "veber_filter": args.veber_filter,
+    }
+
+
+def _metrics_meta(args, seed: int, reference: dict | None,
+                  oracle_meta: dict | None) -> dict:
+    """Everything a reader needs to decide whether two rows are comparable."""
+    try:
+        import rdkit as _rdkit
+        rdkit_version = _rdkit.__version__
+    except Exception:  # pragma: no cover - rdkit is a hard dependency
+        rdkit_version = None
+    git_sha = None
+    try:
+        import subprocess
+
+        git_sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=Path(__file__).parent,
+        ).stdout.strip() or None
+    except Exception:  # pragma: no cover - git may be absent
+        git_sha = None
+    post_hoc: list[str] = []
+    if args.keep_largest_fragment:
+        post_hoc.append("keep_largest_fragment")
+    if args.min_fragment_atoms > 1:
+        post_hoc.append(f"min_fragment_atoms={args.min_fragment_atoms}")
+    if args.max_bonds_ratio > 0.0:
+        post_hoc.append(f"max_bonds_ratio={args.max_bonds_ratio}")
+    if args.min_qed > 0.0:
+        post_hoc.append(f"min_qed={args.min_qed}")
+    if args.veber_filter:
+        post_hoc.append("veber_filter")
+    return {
+        "oracle": oracle_meta,
+        "reference": reference,
+        "relaxed_metrics_are": "geometry-only" if args.relax else None,
+        "post_hoc": post_hoc,
+        "protocol": {
+            "ddim_steps": args.ddim_steps, "eta": args.eta,
+            "step_schedule": args.step_schedule, "relax": args.relax,
+            "bond_tolerance": args.bond_tolerance,
+            "min_fragment_atoms": args.min_fragment_atoms,
+            "max_bonds_ratio": args.max_bonds_ratio,
+            "perceive_bonds": args.perceive_bonds,
+            "seed": seed,
+        },
+        "versions": {"torch": torch.__version__, "rdkit": rdkit_version,
+                     "git": git_sha},
+    }
+
+
+def _generate_batches(args, model, coord_ddpm, type_ddpm, histogram, device,
+                      cond_enabled: bool, properties_mean, seed: int):
+    """Generate ``--num_samples`` molecules for one seed.
+
+    Returns ``(mols, stats)``: ``stats[i]`` is the atom accounting of sample
+    ``i`` (fix.md F3), so post-hoc pruning is visible in the payload.
+    """
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    all_mols: list = []
+    stats: list[dict] = []
+    num_batches = (args.num_samples + args.batch_size - 1) // args.batch_size
+    for b_idx in range(num_batches):
+        n_batch = min(args.batch_size, args.num_samples - b_idx * args.batch_size)
+        atom_counts = _sample_atom_counts(histogram, n_batch, rng)
+        total_atoms = sum(atom_counts)
+
+        print(
+            f"Batch {b_idx + 1}/{num_batches}: generating {n_batch} molecules "
+            f"({total_atoms} atoms)"
+        )
+
+        # Phase 6: classifier-free guidance toward the target BBB class.
+        # Only active when the checkpoint was trained with conditioning.
+        cond = None
+        if cond_enabled:
+            cond = build_target_cond(
+                args.target_bbb, n_batch, device,
+                properties_mean=properties_mean,
+            )
+
+        pos, z = sample_molecules(
+            model, coord_ddpm, type_ddpm,
+            torch.tensor(atom_counts, dtype=torch.long),
+            device=device,
+            ddim_steps=args.ddim_steps,
+            eta=args.eta,
+            step_schedule=args.step_schedule,
+            type_temperature=args.type_temperature,
+            steric_weight=args.steric_weight,
+            steric_start_frac=args.steric_start_frac,
+            steric_sigma_scale=args.steric_sigma_scale,
+            steric_k_rep=args.steric_k_rep,
+            steric_r_clash=args.steric_r_clash,
+            valence_weight=args.valence_weight,
+            valence_start_frac=args.valence_start_frac,
+            valence_tau=args.valence_tau,
+            valence_covalent_factor=args.valence_covalent_factor,
+            valence_k_val=args.valence_k_val,
+            valence_max_step=args.valence_max_step,
+            connectivity_weight=args.connectivity_weight,
+            connectivity_start_frac=args.connectivity_start_frac,
+            connectivity_window_pad=args.connectivity_window_pad,
+            connectivity_k_att=args.connectivity_k_att,
+            connectivity_max_step=args.connectivity_max_step,
+            coord_temperature=args.coord_temperature,
+            cond=cond,
+            guidance_scale=args.guidance_scale if cond is not None else 0.0,
+        )
+
+        # Convert each generated molecule to RDKit
+        offset = 0
+        for count in atom_counts:
+            mol_pos = pos[offset:offset + count].numpy()
+            mol_z = z[offset:offset + count].numpy()
+            # Model type indices ARE raw atomic numbers (see note above).
+            atomic_numbers = np.array([int(t) for t in mol_z])
+            atom_stats: dict = {}
+            mol = coords_and_types_to_mol(
+                mol_pos, atomic_numbers,
+                min_fragment_atoms=args.min_fragment_atoms,
+                bond_tolerance=args.bond_tolerance,
+                max_bonds_ratio=args.max_bonds_ratio,
+                perceive_orders=args.perceive_bonds,
+                keep_largest_fragment=args.keep_largest_fragment,
+                stats=atom_stats,
+            )
+            all_mols.append(mol)
+            stats.append(atom_stats)
+            offset += count
+    return all_mols, stats
+
+
+def _evaluate_seed(args, *, seed: int, model, coord_ddpm, type_ddpm, histogram,
+                   device, train_smiles: set[str], train_mols: list,
+                   reference: dict | None, bbb_classifier,
+                   oracle_meta: dict | None, full_dataset,
+                   cond_enabled: bool, properties_mean):
+    """Generate + score one seed. Returns ``(payload, mols, relaxed_mols)``."""
+    print(f"\n===== seed {seed} =====")
+    all_mols, stats = _generate_batches(
+        args, model, coord_ddpm, type_ddpm, histogram, device,
+        cond_enabled, properties_mean, seed,
+    )
+
+    # Rejection sampling on QED (recommendation.md, "Improving QED" #3):
+    # report the raw table first, then filter and evaluate the survivors.
+    if args.min_qed > 0.0:
+        from src.utils.evaluation import apply_qed_filter
+
+        all_mols, n_qed_dropped = apply_qed_filter(all_mols, args.min_qed)
+        print(f"QED filter (>= {args.min_qed:.2f}): dropped {n_qed_dropped} "
+              f"of {n_qed_dropped + sum(m is not None for m in all_mols)} molecules")
+
+    # Veber filter (plan workstream C2): drop Veber-failing molecules, but
+    # keep the PRE-filter pass rate as Veber_filtered% — with the filter on
+    # the table's Veber% is 100 by construction and the honest number must
+    # stay visible next to it (same raw-vs-filtered rationale as --min_qed).
+    veber_before = None
+    if args.veber_filter:
+        from src.utils.evaluation import apply_veber_filter, veber_pass_rate
+
+        veber_before = veber_pass_rate(all_mols)
+        all_mols, n_veber_dropped = apply_veber_filter(all_mols)
+        print(f"Veber filter (TPSA <= 140, rot <= 10): dropped "
+              f"{n_veber_dropped} of "
+              f"{n_veber_dropped + sum(m is not None for m in all_mols)} "
+              f"molecules (pre-filter pass rate {veber_before * 100.0:.1f}%)")
+
+    metrics = evaluate(all_mols, train_smiles, train_mols,
+                       bbb_classifier=bbb_classifier,
+                       stats=stats, reference=reference)
+    if args.veber_filter:
+        # Pre-filter pass fraction — computed before apply_veber_filter and
+        # reported alongside the (trivially 100) filtered Veber%.
+        metrics["Veber_filtered%"] = veber_before * 100.0
+
+    # Lab-readiness gate (stage 7): computed on the RAW samples — the gate
+    # answers "would we order this batch", and a lab orders the molecules as
+    # generated, not an idealized post-hoc relaxation. Gate metric keys are
+    # disjoint from evaluate()'s, so the update below cannot clobber a MOSES
+    # number; the keys land in metrics.json like any other.
+    gate = None
+    gate_relaxed = None
+    gate_ref = None
+    if args.lab_gate:
+        from src.utils.lab_gate import print_gate, run_gate
+
+        gate_ref = _gate_reference_mols(full_dataset, train_smiles)
+        gate = run_gate(all_mols, gate_ref)
+        metrics.update(gate["metrics"])
+        print_gate(gate)
+
+    print("\n--- RAW (as generated) ---")
+    print_metrics(metrics)
+
+    # LaTeX row is RENDERED from the canonical order, never stored (fix.md
+    # F8: a frozen row went stale the moment a metric was patched).
+    print("\nLaTeX row (canonical order):")
+    print(latex_row(metrics))
+
+    # fix.md F7: relaxation moves atoms, not bonds. Only geometry-dependent
+    # quantities can change, so only those are reported a second time.
+    relaxed = None
+    relaxed_metrics = None
+    if args.relax:
+        from src.utils.evaluation import relax_molecule
+
+        relaxed = [relax_molecule(m) for m in all_mols]
+        relaxed_metrics = geometry_only_metrics(relaxed)
+        print("\n--- RELAXED (geometry only; graph metrics cannot change) ---")
+        for key, val in relaxed_metrics.items():
+            print(f"{key:<22} {'—' if val is None else f'{val:.4f}':>10}")
+        if gate is not None:
+            print("\n--- lab-readiness gate on RELAXED samples ---")
+            gate_relaxed = run_gate(relaxed, gate_ref)
+            print_gate(gate_relaxed)
+
+    payload = {
+        "metrics_schema": 2,
+        "metrics": metrics,
+        "reportable": int(metrics.get("n_valid") or 0) >= MIN_REPORTABLE_N,
+        "num_valid": int(metrics.get("n_valid") or 0),
+        "num_total": int(metrics.get("n_total") or 0),
+        "metrics_meta": _metrics_meta(args, seed, reference, oracle_meta),
+        "run": _run_cfg(args, seed),
+    }
+    if relaxed_metrics is not None:
+        payload["metrics_relaxed"] = relaxed_metrics
+    if gate is not None:
+        payload["lab_gate"] = gate
+    if gate_relaxed is not None:
+        payload["lab_gate_relaxed"] = gate_relaxed
+    return payload, all_mols, relaxed
+
+
+def _aggregate_payloads(payloads: list[dict], seeds: list[int]) -> dict:
+    """Seed-aggregated row: median [min, max] per metric (fix.md F6)."""
+    import statistics
+
+    first = payloads[0]
+    median: dict = {}
+    lo: dict = {}
+    hi: dict = {}
+    for key, val in first["metrics"].items():
+        vals = [p["metrics"].get(key) for p in payloads]
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in vals):
+            nums = [float(v) for v in vals]
+            median[key] = statistics.median(nums)
+            lo[key] = min(nums)
+            hi[key] = max(nums)
+        else:
+            median[key] = val
+    meta = dict(first.get("metrics_meta") or {})
+    meta["aggregation"] = "median [min, max] over seeds"
+    return {
+        "metrics_schema": 2,
+        "metrics": median,
+        "metrics_min": lo,
+        "metrics_max": hi,
+        "seeds": list(seeds),
+        "reportable": all(p.get("reportable") for p in payloads),
+        "num_valid": int(statistics.median(
+            [p["num_valid"] for p in payloads])),
+        "num_total": first["num_total"],
+        "metrics_meta": meta,
+        "run": {**first["run"], "seeds": list(seeds)},
+        "per_seed": {f"seed_{s}": p["metrics"]
+                     for s, p in zip(seeds, payloads)},
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate molecules and evaluate")
     parser.add_argument("--checkpoint", type=str, required=True,
@@ -91,6 +498,12 @@ def main() -> None:
                         help="Seed for BOTH the atom-count histogram rng and "
                              "torch's sampling noise (same seed => identical "
                              "molecules; enables the plan's seed medians)")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None,
+                        help="Replicate the WHOLE generation+eval per seed and "
+                             "report median [min, max] (fix.md F6). A "
+                             "single-seed row must be labelled as such; "
+                             "--seed still sets the first seed when this is "
+                             "omitted)")
     parser.add_argument("--device", type=str, default=None,
                         help="Force device (cuda / cpu)")
     parser.add_argument("--output_dir", type=str, default=None,
@@ -319,19 +732,23 @@ def main() -> None:
         full_dataset, _, _ = load_b3db(root=ckpt_cfg["data"]["root"])
     else:
         full_dataset = load_qm9(root=ckpt_cfg["data"]["root"])
-    train_smiles: set[str] = set()
-    train_mols: list[Chem.Mol] = []
+    train_mols, train_smiles, ref_info = _reference_mols_and_smiles(full_dataset)
+    if ref_info["coverage"] < 0.9:
+        msg = (f"Reference set covers only "
+               f"{100.0 * ref_info['coverage']:.1f}% of "
+               f"{ref_info['requested']} dataset molecules "
+               f"({ref_info['n']} usable): Novelty/SNN/ScaffCov would be "
+               f"measured against a fragment of the data (fix.md F1)")
+        if ref_info["n_dataset_smiles"] > 0:
+            raise SystemExit("ERROR: " + msg)
+        print("WARNING: " + msg)
+
+    # Raw QED/LogP/TPSA/MW — same keys/units ``extract_cond`` feeds the model
+    # at training time (src/fed/trainer.py). Accumulated separately so guided
+    # generation can condition on the training "average molecule" profile.
     prop_sum = torch.zeros(4)
     prop_n = 0
     for data in full_dataset:
-        mol = _data_to_rdkit_mol(data)
-        if mol is not None:
-            s = Chem.MolToSmiles(mol)
-            train_smiles.add(s)
-            train_mols.append(mol)
-        # Raw QED/LogP/TPSA/MW — same keys/units ``extract_cond`` feeds the
-        # model at training time (src/fed/trainer.py). Accumulated here so
-        # guided generation can condition on the training "average molecule".
         props = [getattr(data, k, None) for k in ("qed", "logp", "tpsa", "mw")]
         if all(p is not None for p in props):
             prop_sum += torch.tensor(
@@ -340,22 +757,37 @@ def main() -> None:
             prop_n += 1
     properties_mean = (prop_sum / prop_n) if prop_n else None
 
-    print(f"Training set: {len(train_smiles)} unique SMILES across {len(train_mols)} molecules")
+    ref_conn = connectivity(train_mols)
+    reference = {
+        **ref_info,
+        "dataset": data_name,
+        "BondsPerAtom": ref_conn.get("BondsPerAtom"),
+        "BondsPerMol": ref_conn.get("BondsPerMol"),
+        "MeanAtoms": ref_conn.get("MeanAtoms"),
+        "FragmentsPerMol": ref_conn.get("FragmentsPerMol"),
+    }
+    print(f"Reference set: {ref_info['n']} / {ref_info['requested']} molecules "
+          f"({100.0 * ref_info['coverage']:.1f}%, "
+          f"source={ref_info['source']}), "
+          f"{len(train_smiles)} unique SMILES")
+    print("Reference geometry: "
+          + ("bonds/atom "
+             f"{reference['BondsPerAtom']:.3f}, atoms "
+             f"{reference['MeanAtoms']:.1f}, fragments "
+             f"{reference['FragmentsPerMol']:.2f}"
+             if reference["BondsPerAtom"] is not None
+             else "not measurable"))
 
-    # Build atom-count histogram and sample
-    rng = np.random.default_rng(args.seed)
+    bbb_classifier, oracle_meta = _load_oracle(args, ckpt_cfg, cfg, device)
+
     histogram = _build_atom_count_histogram(full_dataset)
 
-    all_mols: list[Chem.Mol | None] = []
-    num_batches = (args.num_samples + args.batch_size - 1) // args.batch_size
     cond_enabled = bool(
         (ckpt_cfg.get("conditioning") or {}).get("enabled", False)
     )
     if cond_enabled:
         print(f"Conditioning enabled — guiding toward BBB class "
               f"{args.target_bbb} with w={args.guidance_scale}")
-        # Property conditioning must use the training-set raw means (the
-        # distribution ``extract_cond`` saw); zeros would be out-of-distribution.
         if properties_mean is None:
             print("  WARNING: no training property means found — "
                   "falling back to zeros (out-of-distribution)")
@@ -364,218 +796,36 @@ def main() -> None:
                   f"qed={properties_mean[0]:.3f} logp={properties_mean[1]:.3f} "
                   f"tpsa={properties_mean[2]:.3f} mw={properties_mean[3]:.3f}")
 
-    for b_idx in range(num_batches):
-        n_batch = min(args.batch_size, args.num_samples - b_idx * args.batch_size)
-        atom_counts = _sample_atom_counts(histogram, n_batch, rng)
-        total_atoms = sum(atom_counts)
-
-        print(
-            f"Batch {b_idx + 1}/{num_batches}: generating {n_batch} molecules "
-            f"({total_atoms} atoms)"
+    seeds = [int(s) for s in (args.seeds or [args.seed])]
+    results: list[dict] = []
+    first_mols: list = []
+    first_relaxed = None
+    for seed in seeds:
+        payload, mols, relaxed = _evaluate_seed(
+            args, seed=seed, model=model, coord_ddpm=coord_ddpm,
+            type_ddpm=type_ddpm, histogram=histogram, device=device,
+            train_smiles=train_smiles, train_mols=train_mols,
+            reference=reference, bbb_classifier=bbb_classifier,
+            oracle_meta=oracle_meta, full_dataset=full_dataset,
+            cond_enabled=cond_enabled, properties_mean=properties_mean,
         )
-
-        # Phase 6: classifier-free guidance toward the target BBB class.
-        # Only active when the checkpoint was trained with conditioning.
-        cond = None
-        if cond_enabled:
-            cond = build_target_cond(
-                args.target_bbb, n_batch, device,
-                properties_mean=properties_mean,
+        results.append(payload)
+        if len(results) == 1:
+            first_mols, first_relaxed = mols, relaxed
+        if args.output_dir and len(seeds) > 1:
+            _save_eval_outputs(
+                str(Path(args.output_dir) / f"seed_{seed}"), mols, payload,
+                relaxed_mols=relaxed,
             )
-
-        pos, z = sample_molecules(
-            model, coord_ddpm, type_ddpm,
-            torch.tensor(atom_counts, dtype=torch.long),
-            device=device,
-            ddim_steps=args.ddim_steps,
-            eta=args.eta,
-            step_schedule=args.step_schedule,
-            type_temperature=args.type_temperature,
-            steric_weight=args.steric_weight,
-            steric_start_frac=args.steric_start_frac,
-            steric_sigma_scale=args.steric_sigma_scale,
-            steric_k_rep=args.steric_k_rep,
-            steric_r_clash=args.steric_r_clash,
-            valence_weight=args.valence_weight,
-            valence_start_frac=args.valence_start_frac,
-            valence_tau=args.valence_tau,
-            valence_covalent_factor=args.valence_covalent_factor,
-            valence_k_val=args.valence_k_val,
-            valence_max_step=args.valence_max_step,
-            connectivity_weight=args.connectivity_weight,
-            connectivity_start_frac=args.connectivity_start_frac,
-            connectivity_window_pad=args.connectivity_window_pad,
-            connectivity_k_att=args.connectivity_k_att,
-            connectivity_max_step=args.connectivity_max_step,
-            coord_temperature=args.coord_temperature,
-            cond=cond,
-            guidance_scale=args.guidance_scale if cond is not None else 0.0,
-        )
-
-        # Convert each generated molecule to RDKit
-        offset = 0
-        for count in atom_counts:
-            mol_pos = pos[offset:offset + count].numpy()
-            mol_z = z[offset:offset + count].numpy()
-            # Model type indices ARE raw atomic numbers (see note above).
-            atomic_numbers = np.array([int(t) for t in mol_z])
-            mol = coords_and_types_to_mol(
-                mol_pos, atomic_numbers,
-                min_fragment_atoms=args.min_fragment_atoms,
-                bond_tolerance=args.bond_tolerance,
-                max_bonds_ratio=args.max_bonds_ratio,
-                perceive_orders=args.perceive_bonds,
-                keep_largest_fragment=args.keep_largest_fragment,
-            )
-            all_mols.append(mol)
-            offset += count
-
-    # Rejection sampling on QED (recommendation.md, "Improving QED" #3):
-    # report the raw table first, then filter and evaluate the survivors.
-    if args.min_qed > 0.0:
-        from src.utils.evaluation import apply_qed_filter
-
-        all_mols, n_qed_dropped = apply_qed_filter(all_mols, args.min_qed)
-        print(f"QED filter (>= {args.min_qed:.2f}): dropped {n_qed_dropped} "
-              f"of {n_qed_dropped + sum(m is not None for m in all_mols)} molecules")
-
-    # Veber filter (plan workstream C2): drop Veber-failing molecules, but
-    # keep the PRE-filter pass rate as Veber_filtered% — with the filter on
-    # the table's Veber% is 100 by construction and the honest number must
-    # stay visible next to it (same raw-vs-filtered rationale as --min_qed).
-    veber_before = None
-    if args.veber_filter:
-        from src.utils.evaluation import apply_veber_filter, veber_pass_rate
-
-        veber_before = veber_pass_rate(all_mols)
-        all_mols, n_veber_dropped = apply_veber_filter(all_mols)
-        print(f"Veber filter (TPSA <= 140, rot <= 10): dropped "
-              f"{n_veber_dropped} of "
-              f"{n_veber_dropped + sum(m is not None for m in all_mols)} "
-              f"molecules (pre-filter pass rate {veber_before * 100.0:.1f}%)")
-
-    # Evaluate — BBB oracle resolution: explicit --bbb_oracle flag first,
-    # else the checkpoint config's bbb_classifier.checkpoint, else the
-    # --config YAML's. Sweep/ablation runners never pass the flag, so this
-    # keeps BBB% populated for configs that declare an oracle (Phase 5
-    # metric lists); a missing declared file warns instead of crashing.
-    oracle_path = args.bbb_oracle
-    if not oracle_path:
-        for source in (ckpt_cfg, cfg):
-            candidate = (source.get("bbb_classifier") or {}).get("checkpoint")
-            if candidate:
-                oracle_path = str(candidate)
-                break
-    bbb_classifier = None
-    if oracle_path and not Path(oracle_path).exists():
-        if args.bbb_oracle:
-            raise FileNotFoundError(f"--bbb_oracle not found: {oracle_path}")
-        print(f"WARNING: config declares bbb_classifier.checkpoint="
-              f"{oracle_path} but it does not exist — BBB% disabled")
-        oracle_path = None
-    if oracle_path:
-        from src.models.bbb_classifier import BBBClassifier
-
-        bbb_ckpt = torch.load(oracle_path, map_location=device,
-                              weights_only=False)
-        bbb_classifier = BBBClassifier(
-            hidden_dim=int(bbb_ckpt.get("hidden_dim", 128))).to(device)
-        bbb_classifier.load_state_dict(bbb_ckpt["model_state_dict"])
-        bbb_classifier.eval()
-        print(f"BBB oracle loaded from {oracle_path} "
-              f"(val AUROC {bbb_ckpt.get('val_auroc', float('nan')):.4f})")
-    metrics = evaluate(all_mols, train_smiles, train_mols,
-                       bbb_classifier=bbb_classifier)
-    if args.veber_filter:
-        # Pre-filter pass fraction — computed before apply_veber_filter and
-        # reported alongside the (trivially 100) filtered Veber%.
-        metrics["Veber_filtered%"] = veber_before * 100.0
-    print("\n--- RAW (as generated) ---")
-    print_metrics(metrics)
-
-    # Lab-readiness gate (stage 7): computed on the RAW samples — the gate
-    # answers "would we order this batch", and a lab orders the molecules as
-    # generated, not an idealized post-hoc relaxation. Gate metric keys are
-    # disjoint from evaluate()'s, so the update below cannot clobber a MOSES
-    # number; the keys land in the LaTeX row and metrics.json like any other.
-    # When --relax is also given the gate runs on the relaxed table too, so
-    # both LaTeX rows keep identical key sets (the relaxed row iterates
-    # metric_keys) and the two gate tables can be compared directly.
-    gate = None
-    gate_relaxed = None
-    if args.lab_gate:
-        from src.utils.lab_gate import print_gate, run_gate
-
-        gate_ref = _gate_reference_mols(full_dataset, train_smiles)
-        gate = run_gate(all_mols, gate_ref)
-        metrics.update(gate["metrics"])
-        print_gate(gate)
-
-    # Print as table for easy copy-paste. Includes the Phase 4 BBB metrics
-    # (BBB%, ScaffDiv, ScaffCov, Lipinski%, Veber%, CNS_MPO) so Table I rows
-    # can be pasted straight from the eval log.
-    print("\nLaTeX row:")
-    metric_keys = list(metrics.keys())
-    vals = [f"{metrics[k]:.4f}" for k in metric_keys]
-    latex_row = "  & ".join(vals) + " \\\\"
-    print(latex_row)
-
-    relaxed = None
-    if args.relax:
-        from src.utils.evaluation import relax_molecule
-
-        relaxed = [relax_molecule(m) for m in all_mols]
-        metrics_relaxed = evaluate(relaxed, train_smiles, train_mols,
-                                   bbb_classifier=bbb_classifier)
-        if args.veber_filter:
-            # Same scalar as the raw row: the filter decision is made at raw
-            # time; relaxation does not un-filter the batch.
-            metrics_relaxed["Veber_filtered%"] = veber_before * 100.0
-        print("\n--- RELAXED (MMFF94/UFF post-hoc; report alongside raw) ---")
-        print_metrics(metrics_relaxed)
-        if gate is not None:
-            print("\n--- lab-readiness gate on RELAXED samples ---")
-            gate_relaxed = run_gate(relaxed, gate_ref)
-            metrics_relaxed.update(gate_relaxed["metrics"])
-            print_gate(gate_relaxed)
-        print("\nLaTeX row (relaxed):")
-        print("  & ".join(f"{metrics_relaxed[k]:.4f}" for k in metric_keys) + " \\\\")
-    else:
-        metrics_relaxed = None
 
     if args.output_dir:
-        _save_eval_outputs(
-            args.output_dir, all_mols, metrics, latex_row,
-            checkpoint=args.checkpoint, num_samples=args.num_samples,
-            ddim_steps=args.ddim_steps, eta=args.eta, seed=args.seed,
-            step_schedule=args.step_schedule, relax=args.relax,
-            steric_weight=args.steric_weight,
-            steric_start_frac=args.steric_start_frac,
-            steric_sigma_scale=args.steric_sigma_scale,
-            steric_k_rep=args.steric_k_rep,
-            steric_r_clash=args.steric_r_clash,
-            valence_weight=args.valence_weight,
-            valence_start_frac=args.valence_start_frac,
-            valence_tau=args.valence_tau,
-            valence_covalent_factor=args.valence_covalent_factor,
-            valence_k_val=args.valence_k_val,
-            valence_max_step=args.valence_max_step,
-            connectivity_weight=args.connectivity_weight,
-            connectivity_start_frac=args.connectivity_start_frac,
-            connectivity_window_pad=args.connectivity_window_pad,
-            connectivity_k_att=args.connectivity_k_att,
-            connectivity_max_step=args.connectivity_max_step,
-            coord_temperature=args.coord_temperature,
-            keep_largest_fragment=args.keep_largest_fragment,
-            # Bond-perception chain protocol (plan workstreams A1–A4) —
-            # recorded so any row can be regenerated with the exact lens.
-            min_fragment_atoms=args.min_fragment_atoms,
-            bond_tolerance=args.bond_tolerance,
-            max_bonds_ratio=args.max_bonds_ratio,
-            perceive_bonds=args.perceive_bonds,
-            relaxed_mols=relaxed, relaxed_metrics=metrics_relaxed,
-            gate=gate, gate_relaxed=gate_relaxed,
-        )
+        final = (results[0] if len(results) == 1
+                 else _aggregate_payloads(results, seeds))
+        _save_eval_outputs(args.output_dir, first_mols, final,
+                           relaxed_mols=first_relaxed)
+        if len(results) > 1:
+            print(f"Aggregate (median over seeds {seeds}) written to "
+                  f"{Path(args.output_dir) / 'metrics.json'}")
 
 
 def _gate_reference_mols(full_dataset, train_smiles: set[str]):
@@ -642,15 +892,15 @@ def build_target_cond(
 def _save_eval_outputs(
     output_dir: str,
     mols: list,
-    metrics: dict,
-    latex_row: str,
+    payload: dict,
     relaxed_mols: list | None = None,
-    relaxed_metrics: dict | None = None,
-    gate: dict | None = None,
-    gate_relaxed: dict | None = None,
-    **run_cfg,
 ) -> None:
-    """Persist eval results: metrics.json, smiles.txt, molecules.sdf (3D)."""
+    """Persist eval results: metrics.json (schema v2), smiles.txt, SDFs.
+
+    fix.md F8: no stored ``latex_row`` — rows are rendered from
+    ``METRIC_ORDER`` by whoever draws the table, so a metric patched after
+    the fact can never disagree with its own row.
+    """
     import json
 
     out = Path(output_dir)
@@ -665,20 +915,6 @@ def _save_eval_outputs(
         except Exception:
             continue
 
-    payload = {
-        "metrics": metrics,
-        "latex_row": latex_row,
-        "num_valid": len(valid_smiles),
-        "num_total": len(mols),
-        "run": run_cfg,
-    }
-    if relaxed_metrics is not None:
-        payload["metrics_relaxed"] = relaxed_metrics
-    if gate is not None:
-        # Full stage report + per-criterion verdicts + overall verdict.
-        payload["lab_gate"] = gate
-    if gate_relaxed is not None:
-        payload["lab_gate_relaxed"] = gate_relaxed
     with open(out / "metrics.json", "w") as f:
         json.dump(payload, f, indent=2)
     with open(out / "smiles.txt", "w") as f:
@@ -722,25 +958,21 @@ def _save_eval_outputs(
 
 
 def _data_to_rdkit_mol(data) -> Chem.Mol | None:
-    """Convert a QM9 PyG Data sample to an RDKit Mol (best-effort)."""
+    """Convert a dataset sample to an RDKit Mol with correct bond orders.
+
+    Prefers the dataset's own SMILES (BBBP/B3DB carry it). The coordinate
+    fallback uses the eval's covalent-radii builder — the old
+    ``dist < 2.0`` rule bonded every close pair and mapped unknown elements
+    to carbon, so only 20 of 1628 BBBP molecules survived it (fix.md F1).
+    """
+    smi = getattr(data, "smiles", None)
+    if smi:
+        mol = Chem.MolFromSmiles(str(smi))
+        if mol is not None:
+            return mol
     try:
-        from rdkit.Chem import rdDetermineBonds
-        mol = Chem.RWMol()
-        for z_val in data.z.tolist():
-            symbol = {1: "H", 6: "C", 7: "N", 8: "O", 9: "F",
-                       15: "P", 16: "S", 17: "Cl", 35: "Br", 53: "I"
-                       }.get(int(z_val), "C")
-            mol.AddAtom(Chem.Atom(symbol))
-        # Attempt to infer bonds from 3D distances
-        pos = data.pos.numpy()
-        n_atoms = mol.GetNumAtoms()
-        for i in range(n_atoms):
-            for j in range(i + 1, n_atoms):
-                dist = float(np.linalg.norm(pos[i] - pos[j]))
-                if dist < 2.0:
-                    mol.AddBond(i, j, Chem.BondType.SINGLE)
-        Chem.SanitizeMol(mol)
-        return mol
+        return coords_and_types_to_mol(
+            data.pos.numpy(), data.z.numpy().astype(int))
     except Exception:
         return None
 

@@ -302,7 +302,8 @@ class TestCliWiring:
         assert "bond_tolerance=args.bond_tolerance" in src
         assert "max_bonds_ratio=args.max_bonds_ratio" in src
         assert "perceive_orders=args.perceive_bonds" in src
-        assert "perceive_bonds=args.perceive_bonds" in src  # run_cfg record
+        # run_cfg record (now a dict literal in _run_cfg, fix.md schema v2)
+        assert '"perceive_bonds": args.perceive_bonds' in src
 
     def test_tolerance_matrix_doc_entry(self):
         """The appendix must record what was (and wasn't) implemented."""

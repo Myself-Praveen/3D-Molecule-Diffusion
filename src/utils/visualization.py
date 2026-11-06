@@ -107,12 +107,18 @@ def plot_metric_comparison_table(results: dict[str, dict], output_path: str):
     """
     if not results:
         return _placeholder(output_path, "No results to tabulate")
-    cols: list[str] = []
+    # fix.md F8/F15: columns follow the canonical order, so the table's shape
+    # depends on the metric schema rather than on which rows happen to be
+    # present (the old union-of-keys made column alignment row-dependent).
+    from src.utils.evaluation import METRIC_ORDER
+
+    present: set[str] = set()
     for metrics in results.values():
-        for key in metrics:
-            if key not in cols:
-                cols.append(key)
-    cols = [c for c in cols if c not in ("LogP",)] or cols
+        present.update(metrics)
+    cols = [c for c in METRIC_ORDER if c in present]
+    cols += [c for c in sorted(present) if c not in METRIC_ORDER]
+    if not cols:
+        return _placeholder(output_path, "No metrics to tabulate")
 
     n_rows = len(results)
     fig, ax = plt.subplots(figsize=(0.9 * len(cols) + 2, 0.5 * n_rows + 1.5))
@@ -121,8 +127,15 @@ def plot_metric_comparison_table(results: dict[str, dict], output_path: str):
     for name, metrics in results.items():
         row = []
         for col in cols:
-            val = metrics.get(col, "")
-            row.append(f"{val:.3f}" if isinstance(val, float) else str(val))
+            val = metrics.get(col)
+            if val is None:
+                row.append("—")  # not measured (never rendered as 0)
+            elif isinstance(val, bool):
+                row.append(str(val))
+            elif isinstance(val, (int, float)):
+                row.append(f"{val:.3f}")
+            else:
+                row.append(str(val) if val != "" else "")
         cell_text.append(row)
     table = ax.table(
         cellText=cell_text,

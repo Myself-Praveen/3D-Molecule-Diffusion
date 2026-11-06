@@ -89,15 +89,102 @@ def find_histories() -> dict[str, str]:
     }
 
 
-def load_table_rows() -> dict[str, dict]:
-    rows = {}
+#: Protocol fields that must agree inside one table block (fix.md F15).
+PROTOCOL_FIELDS = ("ddim_steps", "eta", "step_schedule", "relax",
+                   "keep_largest_fragment", "bond_tolerance",
+                   "max_bonds_ratio", "perceive_bonds")
+
+
+#: Rows whose protocol difference is deliberate and documented. Kept in the
+#: table only because the difference is stated here (fix.md F15).
+TABLE_PROTOCOL_EXCEPTIONS = {
+    "V4-eps (QM9) eta=0.5":
+        "retained for continuity with the earlier eta=0.5 sweep "
+        "(progress.md §14); the eta=1.0 re-eval is the comparable row",
+}
+
+
+class MixedProtocolError(SystemExit):
+    """Two rows in one table block were measured with different protocols."""
+
+    def __init__(self, code: int = 2, message: str = "") -> None:
+        self.message = message
+        super().__init__(code)
+
+
+def _protocol_of(payload: dict) -> dict:
+    meta = (payload.get("metrics_meta") or {}).get("protocol") or {}
+    run = payload.get("run") or {}
+    return {f: meta.get(f, run.get(f)) for f in PROTOCOL_FIELDS}
+
+
+def _check_protocols(protocols: dict[str, dict],
+                     exceptions: dict[str, str]) -> None:
+    """Refuse a block that mixes samplers (fix.md F15).
+
+    The V6-radius row (ddim 200 + relax) and the V7 probe row (ddim 50, no
+    relax) differ by 10 validity points ON THE SAME CHECKPOINT — a single
+    table that silently unions them is not a measurement of anything. A row
+    may opt out with ``"protocol_exception": "<reason>"`` in its payload.
+    """
+    groups: dict[tuple, list[str]] = {}
+    for label, proto in protocols.items():
+        if label in exceptions:
+            continue
+        groups.setdefault(tuple(proto.get(f) for f in PROTOCOL_FIELDS),
+                          []).append(label)
+    if len(groups) <= 1:
+        return
+    lines = ["Table I refuses mixed protocols (fix.md F15):"]
+    for key, labels in groups.items():
+        detail = ", ".join(f"{f}={v}"
+                           for f, v in zip(PROTOCOL_FIELDS, key))
+        lines.append(f"  [{detail}] -> {', '.join(labels)}")
+    lines.append('Tag a row with "protocol_exception": "<reason>" to keep it.')
+    message = "\n".join(lines)
+    print(message, file=sys.stderr)
+    raise MixedProtocolError(2, message)
+
+
+def load_table_rows(strict: bool = True) -> dict[str, dict]:
+    """Table I rows, with n, reportability and a protocol check.
+
+    Reads the whole payload, not just ``metrics``: the old loader ignored
+    ``num_total`` and ``run``, so n=200 and n=1000 rows sat in one block and a
+    post-hoc-pruned row was compared head-to-head with unpruned ones
+    (fix.md F3/F15). Pruned rows are labelled in the row name; a mixed block
+    aborts with exit code 2 unless a row carries ``protocol_exception``.
+    """
+    rows: dict[str, dict] = {}
+    protocols: dict[str, dict] = {}
+    exceptions: dict[str, str] = dict(TABLE_PROTOCOL_EXCEPTIONS)
     for label, dirname in TABLE_RUNS:
         path = OUTPUTS / dirname / "metrics.json"
-        if path.exists():
-            try:
-                rows[label] = json.loads(path.read_text())["metrics"]
-            except (json.JSONDecodeError, KeyError, OSError):
-                continue
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if "metrics" not in payload:
+            continue
+        row = dict(payload["metrics"])
+        n_valid = payload.get("num_valid")
+        n_total = payload.get("num_total")
+        row["n"] = (f"{n_valid}/{n_total}" if n_valid is not None else "—")
+        if payload.get("reportable") is False:
+            row["reportable"] = "no"
+        retained = row.get("AtomsRetained%")
+        shown = label
+        if isinstance(retained, (int, float)) and retained < 99.0:
+            shown = (f"{label} [post-hoc fragment-pruned, "
+                     f"{retained:.0f}% atoms]")
+        rows[shown] = row
+        protocols[shown] = _protocol_of(payload)
+        if payload.get("protocol_exception"):
+            exceptions[shown] = str(payload["protocol_exception"])
+    if strict and len(rows) > 1:
+        _check_protocols(protocols, exceptions)
     return rows
 
 

@@ -40,28 +40,11 @@
     "max_bonds_ratio": 0.0,
     "perceive_bonds": false
   },
-  "metrics_relaxed": {
-    "Validity": 39.800000000000004,
-    "Uniqueness": 99.74874371859298,
-    "Novelty": 99.74874371859298,
-    "IntDiv_p": 0.8799069132475801,
-    "QED": 0.5707570339230342,
-    "LogP": 1.6680144974874378,
-    "SNN": 0.09046634714055017,
-    "BBB%": 0.0,
-    "ScaffDiv": 0.8291457286432161,
-    "ScaffCov": 0.16666666666666666,
-    "Lipinski%": 95.22613065326632,
-    "Veber%": 70.85427135678391,
-    "CNS_MPO": 3.1114698115577886,
-    "ConnectedValidity": 9.0,
-    "BondsPerMol": 37.29396984924623,
-    "ConnectedFrac": 22.613065326633166
-  },
   "bbb_recompute": {
     "reason": "predict_batch node-count inference zeroed whole cohorts before the num_nodes fix (progress.md section 17)",
     "source": "molecules.sdf",
     "n_molecules": 398,
     "previous_value": 0.0
-  }
+  },
+  "notes": "metrics_relaxed removed (fix.md F7): it duplicated metrics on 16/16 keys and had already drifted (BBB% 34.17 raw vs 0.0 relaxed). Relaxation moves coordinates only and cannot change graph metrics."
 }

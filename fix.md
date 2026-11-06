@@ -766,3 +766,49 @@ done
   on real molecules; leave it alone and recalibrate only if the control drops.
 * Deleting historical `outputs/` directories. Old rows stay as the audit trail; new rows are
   added with `metrics_schema: 2`.
+
+---
+
+## 9. Implementation status (what landed, and where it differs from the spec)
+
+| item | file | state |
+|---|---|---|
+| F11 probe: validity-gated yield score, `-inf` under 4 valid, n=64 / ddim 50, settings stored in `best.pt` | `train.py`, `configs/central_v{5,6,7,8}_*.yaml` | **done** — `tests/test_checkpoint_selection.py` |
+| F2/F10 `connectivity()` v2: `BondsPerAtom`, `BondsPerAtom_rel`, `MeanAtoms`, `FragmentsPerMol`, `None` for undefined | `src/utils/evaluation.py` | done |
+| F6 `wilson_ci` on every rate | `src/utils/evaluation.py` | done |
+| F4/F9 `bbb_rates`: `BBB%` **and** `BBB_yield%`, counts + CIs, no `-1` sentinel | `src/utils/evaluation.py` | done |
+| F3 `stats=` atom accounting → `AtomsRetained%`, `MeanAtoms_requested`, `MeanAtoms_drawn` | `evaluation.py`, `generate_and_eval.py` | done |
+| F5 `MIN_REPORTABLE_N` suppression in the printer | `src/utils/evaluation.py` | done |
+| F8 `latex_row()` rendered from `METRIC_ORDER`; no stored row | `evaluation.py`, `generate_and_eval.py` | done |
+| F7 relaxed payload = geometry only; `eval_pre_rl` stale `metrics_relaxed` removed | `evaluation.py`, `outputs/eval_pre_rl/metrics.json` | done |
+| F1 reference set from dataset SMILES (1628/1628, 1564 unique; **bonds/atom 1.038, 45.9 atoms**), hard-fail under 90 % | `generate_and_eval.py` | done — measured in the smoke run |
+| F12/F13/F16 geometry axis in `metrics.json`, orphan counting, `SizeMatch_KS` | `evaluation.py` | done |
+| F15 protocol-checked Table I, pruned-row labels, canonical column order, `None → —` | `scripts/generate_paper_figures.py`, `src/utils/visualization.py` | done |
+| F17 UI reference row measured, fabricated deltas deleted | `ui/utils/mol_loader.py`, `ui/app.py` | done |
+| F14 `Novelty` = novel unique / unique | `evaluation.py` | done |
+| Regenerate the four headline rows at 3 seeds (schema v2) | — | **not run** — the commands are in §5; each is hours of CPU |
+
+Deviations from the text above, all deliberate:
+
+1. **`nan` → `None`.** Undefined quantities are `None` in the payload (JSON `null`), not `NaN`:
+   `NaN` is not valid JSON and silently sorts/averages as a number. `0.0` keeps meaning a
+   measured zero.
+2. **`AtomsRetained%` denominator = atoms of molecules that were BUILT**, not of every sample.
+   Counting a construction failure's atoms as "pruned" conflates failure (already `Validity`)
+   with post-hoc deletion; with the original formula the 8-sample smoke reported 8.3 % retention
+   for an arm that pruned nothing.
+3. **Lab-gate counts are prefixed** (`Gate_n_valid`, `Gate_n_total`, `Gate_n_3d`). The gate's
+   flattened metric dict guaranteed disjointness from `evaluate()`, and `evaluate()` now owns
+   those names — renaming keeps the invariant true instead of letting one clobber the other.
+4. **`MeanAtoms_drawn`** added: the histogram mean the sampler asked for, vs
+   `MeanAtoms_requested` (valid molecules only) which pairs with `AtomsRetained%`.
+5. **Table I exceptions** live in `TABLE_PROTOCOL_EXCEPTIONS` with a reason string, since the
+   historical artifacts carry no `protocol_exception` field.
+
+Also fixed on the way: `_data_to_rdkit_mol` (used by `scripts/reward_select.py` and
+`scripts/lab_readiness_gate.py`) now prefers dataset SMILES and otherwise uses the eval's bond
+builder, so those scripts' reference sets stop being the 20 surviving molecules of F1.
+
+**New training arm:** `configs/central_v8_bbb_probe.yaml` + `scripts/run_v8_bbb_probe.sh` — the
+V7 recipe bit-for-bit, re-run under the corrected probe (separate checkpoint dir so V7's
+broken-selection `best.pt` stays on disk as the audit trail).

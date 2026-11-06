@@ -108,16 +108,26 @@ run_eval rescue_r5_keep_largest "$N_QUICK" --keep_largest_fragment
 run_eval_ancestral rescue_r5_ancestral "$N_QUICK"
 
 echo
-echo "== summary (R1 axes: bonds/atom ~1.0, NN-outside <=1%)"
+echo "== summary (fix.md schema v2: bonds/atom ~1.035, NN-outside <=1%)"
 "$PYTHON" - <<'PY'
 import json
 from pathlib import Path
 
+# fix.md F12/F8: one ruler per row, read from metrics.json. The geometry axis
+# (bonds/atom, NN-outside, fragments) now ships inside evaluate(), so it is
+# present even when clump.json was never run; clump.json stays optional and
+# only fills gaps for pre-v2 rows. None renders as "—", never as nan/0.
 arms = ["eval_pre_rl", "eval_v6_bbb_full", "rescue_r4_cw0p5",
         "rescue_r4_cw1p0", "rescue_r4_cw2p0", "rescue_r5_valence_w0p5",
         "rescue_r5_keep_largest", "rescue_r5_ancestral"]
+
+
+def _f(value, spec=".1f"):
+    return "—" if value is None else format(value, spec)
+
+
 print(f"{'arm':<26}{'V%':>7}{'ConnV':>7}{'ConnF':>7}"
-      f"{'bonds/at':>9}{'nn_out%':>9}{'frags':>7}")
+      f"{'b/atom':>8}{'nn_out%':>9}{'frags':>7}{'atoms%':>8}")
 for name in arms:
     d = Path("outputs") / name
     if not (d / "metrics.json").exists():
@@ -127,10 +137,13 @@ for name in arms:
     c = {}
     if (d / "clump.json").exists():
         c = json.loads((d / "clump.json").read_text()).get("generated", {})
-    print(f"{name:<26}{m.get('Validity', 0):>7.1f}"
-          f"{m.get('ConnectedValidity', 0):>7.2f}"
-          f"{m.get('ConnectedFrac', 0):>7.1f}"
-          f"{c.get('bonds_per_atom', float('nan')):>9.2f}"
-          f"{c.get('nn_outside_window_pct', float('nan')):>9.2f}"
-          f"{c.get('fragments_per_mol', float('nan')):>7.2f}")
+    print(f"{name:<26}{_f(m.get('Validity')):>7}"
+          f"{_f(m.get('ConnectedValidity'), '.2f'):>7}"
+          f"{_f(m.get('ConnectedFrac')):>7}"
+          f"{_f(m.get('BondsPerAtom') if m.get('BondsPerAtom') is not None
+                else c.get('bonds_per_atom'), '.2f'):>8}"
+          f"{_f(m.get('NN_Outside%') if m.get('NN_Outside%') is not None
+                else c.get('nn_outside_window_pct'), '.2f'):>9}"
+          f"{_f(m.get('FragmentsPerMol'), '.2f'):>7}"
+          f"{_f(m.get('AtomsRetained%'), '.0f'):>8}")
 PY

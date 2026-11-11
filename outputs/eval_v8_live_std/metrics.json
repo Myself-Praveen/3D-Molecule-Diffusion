@@ -1,0 +1,131 @@
+{
+  "metrics_schema": 2,
+  "metrics": {
+    "Validity": 14.5,
+    "Validity_ci95": [
+      10.28928513530641,
+      20.048781284894375
+    ],
+    "Uniqueness": 100.0,
+    "Novelty": 100.0,
+    "IntDiv_p": 0.8802661031959793,
+    "QED": 0.5754808314018127,
+    "LogP": 1.5734334482758632,
+    "SNN": 0.18989862626077852,
+    "ScaffDiv": 0.9310344827586207,
+    "ScaffCov": 0.0016286644951140066,
+    "Lipinski%": 100.0,
+    "Veber%": 75.86206896551724,
+    "CNS_MPO": 3.344561576354679,
+    "ConnectedValidity": 6.0,
+    "ConnectedValidity_ci95": [
+      3.46518499012715,
+      10.193263530685089
+    ],
+    "BondsPerMol": 37.6551724137931,
+    "BondsPerAtom": 1.0027548209366393,
+    "BondsPerAtom_rel": 0.9659796038491145,
+    "MeanAtoms": 37.55172413793103,
+    "ConnectedFrac": 41.37931034482759,
+    "FragmentsPerMol": 2.7241379310344827,
+    "n_valid": 29,
+    "n_total": 200,
+    "NN_Outside%": 1.4172649014154337,
+    "NN_p50": 1.159962895298764,
+    "Rg": 3.9002279763955583,
+    "BBB%": 37.93103448275862,
+    "BBB%_ci95": [
+      22.687795730867343,
+      55.99777379071503
+    ],
+    "BBB_yield%": 5.5,
+    "BBB_yield%_ci95": [
+      3.09850208013701,
+      9.57879244659355
+    ],
+    "n_bbb": 11,
+    "MeanAtoms_drawn": 46.215,
+    "MeanAtoms_requested": 37.55172413793103,
+    "AtomsRetained%": 100.0,
+    "SizeMatch_KS": 0.0
+  },
+  "reportable": false,
+  "num_valid": 29,
+  "num_total": 200,
+  "metrics_meta": {
+    "oracle": {
+      "path": "models/bbb_oracle.pt",
+      "val_auroc": 0.9115966386554623
+    },
+    "reference": {
+      "requested": 1628,
+      "n": 1628,
+      "coverage": 1.0,
+      "n_dataset_smiles": 1628,
+      "n_smiles_parsed": 1628,
+      "source": "dataset_smiles",
+      "dataset": "bbbp",
+      "BondsPerAtom": 1.0380703867255452,
+      "BondsPerMol": 47.6504914004914,
+      "MeanAtoms": 45.902948402948404,
+      "FragmentsPerMol": 1.0804668304668306
+    },
+    "relaxed_metrics_are": "geometry-only",
+    "post_hoc": [],
+    "protocol": {
+      "ddim_steps": 200,
+      "eta": 1.0,
+      "step_schedule": "quadratic",
+      "relax": true,
+      "bond_tolerance": null,
+      "min_fragment_atoms": 1,
+      "max_bonds_ratio": 0.0,
+      "perceive_bonds": false,
+      "seed": 42
+    },
+    "versions": {
+      "torch": "2.14.0+cpu",
+      "rdkit": "2026.03.6",
+      "git": "5fed093"
+    }
+  },
+  "run": {
+    "checkpoint": "outputs/eval_v8_live/snapshot_live.pt",
+    "num_samples": 200,
+    "ddim_steps": 200,
+    "eta": 1.0,
+    "seed": 42,
+    "step_schedule": "quadratic",
+    "relax": true,
+    "type_temperature": 1.0,
+    "steric_weight": 0.0,
+    "steric_start_frac": 0.7,
+    "steric_sigma_scale": 0.75,
+    "steric_k_rep": 1.0,
+    "steric_r_clash": null,
+    "valence_weight": 0.0,
+    "valence_start_frac": 0.7,
+    "valence_tau": 0.05,
+    "valence_covalent_factor": 1.1,
+    "valence_k_val": 1.0,
+    "valence_max_step": 0.15,
+    "connectivity_weight": 0.0,
+    "connectivity_start_frac": 0.7,
+    "connectivity_window_pad": 0.5,
+    "connectivity_k_att": 1.0,
+    "connectivity_max_step": 0.15,
+    "coord_temperature": 0.0,
+    "keep_largest_fragment": false,
+    "min_fragment_atoms": 1,
+    "bond_tolerance": null,
+    "max_bonds_ratio": 0.0,
+    "perceive_bonds": false,
+    "min_qed": 0.0,
+    "veber_filter": false
+  },
+  "metrics_relaxed": {
+    "NN_Outside%": 1.1784766917222855,
+    "NN_p50": 1.1702964278000494,
+    "Rg": 3.870192140914794
+  }
+}

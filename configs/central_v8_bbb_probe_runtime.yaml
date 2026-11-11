@@ -1,0 +1,76 @@
+seed: 42
+data:
+  dataset: bbbp
+  root: data/bbbp
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+model:
+  num_types: 10
+  node_dim: 256
+  edge_dim: 256
+  num_layers: 8
+  time_dim: 64
+  cond_dim: 32
+  num_cond_classes: 2
+  use_attention: true
+  self_condition: true
+  coord_refine_layers: 2
+  knn_schedule:
+    - 4
+    - 4
+    - 8
+    - 8
+    - 12
+    - 12
+    - 16
+    - 16
+conditioning:
+  enabled: true
+  label_dropout: 0.1
+  guidance_scale: 2.0
+rl:
+  enabled: false
+  pair_file: outputs/rl_pairs/pairs.pt
+  init_checkpoint: checkpoints/central_v8_bbb_probe/best.pt
+  dpo_ref_checkpoint: checkpoints/central_v8_bbb_probe/best.pt
+  dpo_weight: 0.1
+  dpo_beta: 0.1
+  dpo_batch_size: 32
+  dpo_epochs: 100
+  dpo_lr: 1.0e-5
+  dpo_pair_type: seed_matched
+diffusion:
+  num_steps: 1000
+  schedule: cosine
+  beta_start: 0.0001
+  beta_end: 0.02
+  objective: eps
+training:
+  epochs: 4300
+  batch_size: 32
+  lr: 2.0e-4
+  warmup_epochs: 20
+  grad_clip_norm: 5.0
+  weight_decay: 1.0e-5
+  kNN: 8
+  type_loss_weight: 0.5
+  valence_loss_weight: 1.0
+  valence_tau: 200
+  valence_warmup_rounds: 0
+  diversity_loss_weight: 0.01
+  patience: 4300
+  ema_decay: 0.9999
+  ema_warmup_steps: 2000
+  min_snr_gamma: 0.0
+  rotation_augment_prob: 0.5
+generation:
+  eval_every: 100
+  num_samples: 64
+  ddim_steps: 50
+bbb_classifier:
+  checkpoint: models/bbb_oracle.pt
+checkpoint:
+  dir: checkpoints/central_v8_bbb_probe
+  save_every: 200
+  select_by: generation

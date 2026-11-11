@@ -1,0 +1,18 @@
+{
+  "receptor_pdb": "outputs/lead_triage/docking/4EY7.pdb",
+  "box_center": [
+    -1.58,
+    -50.19,
+    2.1
+  ],
+  "box_edge": 24.0,
+  "exhaustiveness": 8,
+  "n_docked": 1,
+  "n_failed": 0,
+  "best_affinity": -6.997,
+  "median_affinity": -6.997,
+  "outputs": {
+    "csv": "outputs/lead_triage/docking_control/step3_docking.csv",
+    "poses": "outputs/lead_triage/docking_control/poses"
+  }
+}

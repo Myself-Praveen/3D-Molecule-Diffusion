@@ -1,0 +1,2 @@
+name,smiles,status,affinity,rmsd_lb,rmsd_ub,n_modes,pose
+control_donepezil,COc1cc2c(cc1OC)C(=O)C(CC1CCN(Cc3ccccc3)CC1)C2,ok,-6.997,0.0,0.0,9,outputs/lead_triage/docking_control/poses/control_donepezil_out.pdbqt

@@ -1,0 +1,11 @@
+{
+  "n_leads": 25,
+  "pubchem_exact_hits": 2,
+  "pubchem_with_cas": 1,
+  "chembl_analog_hits": 0,
+  "chembl_cutoff_pct": 85,
+  "outputs": {
+    "csv": "outputs/lead_triage/step2_catalog.csv",
+    "enamine_query": "outputs/lead_triage/enamine_query.smi"
+  }
+}

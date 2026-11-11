@@ -1,0 +1,14 @@
+{
+  "input": "outputs/reward_select_v5/elites_top25.sdf",
+  "n_input": 25,
+  "n_saturated": 25,
+  "n_3d": 24,
+  "n_failed": 0,
+  "n_rule_of_5_ok": 25,
+  "n_written": 25,
+  "outputs": {
+    "csv": "outputs/lead_triage/step1_saturated.csv",
+    "sdf_3d": "outputs/lead_triage/step1_saturated_3d.sdf",
+    "smi": "outputs/lead_triage/step1_saturated.smi"
+  }
+}

@@ -13,6 +13,9 @@ models/*
 logs/*
 !outputs/.gitkeep
 
+# Local tool binaries fetched by scripts (docking engine, etc.)
+.tools/
+
 # Local environment and editor files
 .env
 .venv/

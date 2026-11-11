@@ -118,6 +118,13 @@ generation:
   valence_covalent_factor: 1.10
   valence_k_val: 1.0
   valence_max_step: 0.15
+  # Test-time physical connectivity guidance (contract bbb-valence-dpo-v2.1).
+  # Attractive term pulling under-bonded fragments toward covalent distance.
+  connectivity_weight: 0.0
+  connectivity_start_frac: 0.7
+  connectivity_window_pad: 0.5
+  connectivity_k_att: 1.0
+  connectivity_max_step: 0.15
 
 bbb_classifier:
   checkpoint: models/bbb_oracle.pt

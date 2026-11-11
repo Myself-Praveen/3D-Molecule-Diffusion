@@ -1,8 +1,10 @@
 # result.md — latest run (V8 BBB probe, rescue chunk 2)
 
-Metrics below are read directly from the live run's log and checkpoints on
-2026-11-11 ~13:40. This run is still training, so the epoch table grows and the
-generation-probe rows are still empty by design (first probe fires at epoch 4000).
+Metrics below are read directly from the run's log and checkpoints. **The run
+finished at epoch 4300** (test eval done, process exited); the epoch table in §3
+covers the first 10 epochs of this launch, the generation probes from epoch 4000
+onward are in §4, and the molecule-level evals in §5 were taken from the
+mid-chunk weights at epoch 3940.
 
 ## 1. Run identity
 
@@ -23,14 +25,13 @@ generation-probe rows are still empty by design (first probe fires at epoch 4000
 
 | field | value |
 |---|---|
-| state | running |
-| elapsed this launch | 04:47 |
-| CPU | ~791 % |
-| epochs completed | 10 (3918 → 3927) |
-| throughput | ~28 s/epoch |
-| next snapshot | epoch 4000 (`save_every: 200`), ~34 min away |
-| next gen probe | epoch 4000 (`eval_every: 100`), same point |
-| ETA to 4300 | ~2.9 h |
+| state | **finished** — epoch 4300 reached, then `--- Test evaluation ---` ran and the process exited |
+| epochs completed | 383 (3918 → 4300) |
+| throughput | ~26 s/epoch |
+| gen probes fired | 4000, 4100, 4200, 4300 (every 100 epochs) |
+| snapshots written | `epoch_4000.pt`, `best.pt` (epoch 4200), `last.pt` (epoch 4300) |
+| final test loss | pos 0.5953 / type 0.6140 / total 0.9023 |
+| final val (epoch 4300) | 0.9574 — worst in the chunk, 0.11 above `best_val_loss` |
 
 ## 3. Per-epoch metrics (this launch)
 
@@ -70,33 +71,58 @@ the generation probe more checkpoints to draw from, not to improve val loss.
 
 ## 4. Checkpoint metrics
 
-### `best.pt` — the current winner (epoch 3100, unchanged this launch)
+### `best.pt` — current winner (**epoch 4200**, changed twice this launch)
 
 | metric | value |
 |---|---|
-| stored epoch | 3100 |
-| gen validity | 9.375 % |
-| n_valid / n_samples | 6 / 64 |
-| connected fraction | 33.33 % |
-| nn_outside | 9.29 % |
-| generation score | **−6.1693** |
+| stored epoch | 4200 |
+| gen validity | 15.625 % |
+| n_valid / n_samples | 10 / 64 |
+| connected fraction | 20.0 % |
+| nn_outside | 9.375 % |
+| generation score | **−6.2766** |
 | val_loss | 0.8473 |
 | best_val_loss | 0.8473 |
-| epochs_no_improve (at save) | 1656 |
+| epochs_no_improve (at save) | 2756 |
 | probe_settings | `num_samples 64, ddim_steps 50, size_source training_histogram` |
 | probe score formula | `(validity/100)*conn_frac - nn_outside`, `-inf` when `n_valid < 4` |
 
-### `last.pt` — live EMA state (epoch 3927, overwritten every epoch)
+### `last.pt` — final EMA state (epoch 4300)
 
 | metric | value |
 |---|---|
-| epoch | 3927 |
-| val_loss | 0.9132 |
+| epoch | 4300 |
+| val_loss | 0.9574 |
 | best_val_loss | 0.8473 |
 | best_gen_score | `None` (EMA snapshot never stores the probe) |
-| epochs_no_improve | 2483 |
+| epochs_no_improve | 2856 |
 | gen_metrics | `None` |
-| mtime | 2026-11-11 13:37 |
+| mtime | 2026-11-11 16:36 |
+
+### Generation-probe trajectory (the run's actual selection signal)
+
+Probe: 64 samples, 50 DDIM steps, sizes from the training histogram. Score =
+`(validity_pct × conn_frac) − nn_out_pct`, `-inf` when `n_valid < 4`.
+
+| epoch | valid % | n≥4 ok | conn % | nn_out % | score | outcome |
+|---|---|---|---|---|---|---|
+| 4000 | 12.5 | 8/64 | 25.0 | 10.4 | −7.2566 | **overwrote `best.pt`** |
+| 4100 | 9.4 | 6/64 | 16.7 | 9.4 | −7.84 | kept |
+| 4200 | 15.6 | 10/64 | 20.0 | 9.4 | **−6.2766** | **`best.pt` now** |
+| 4300 | 4.7 | 3/64 | 0.0 | 10.4 | −10.4 | kept |
+
+Two things this table shows that the loss curves do not:
+
+1. **Validity peaks late and then collapses.** The best probe of the whole run
+   is epoch 4200 (15.6 % valid), not the epoch-3940 weights used for §5. The
+   final probe (4.7 %, and zero of the three valid molecules were connected) is
+   the worst — the last 100 epochs degraded generation while val loss was
+   already meaningless at lr ≈ 5e-6.
+2. **The probe is a 3-of-64 coin flip.** `n_valid ≥ 4` is required for a finite
+   score, and epoch 4300 missed it by one molecule, scoring −10.4 as a result.
+   Differences of one or two molecules in a 64-sample probe are not
+   distinguishable from noise, so `best.pt` moving between 4000 and 4200 is not
+   evidence that 4200 generates better molecules.
 
 ## 5. Molecule-level metrics (validity / ConnValidity / BBB% / QED)
 
@@ -106,6 +132,11 @@ explicit out-of-schedule evaluation of the live weights.
 
 **Evaluated checkpoint:** snapshot of `last.pt` taken while this chunk was at
 **epoch 3940** (`val_loss 0.9071`).
+
+The run has since finished, and its epoch-4200 probe (15.6 % valid, 10/64) is
+the best of the run — so the numbers below probably **understate** this arm
+slightly. Re-running Protocol B on `best.pt` (epoch 4200) is the honest fix;
+the 64-sample probe is too small to treat the two as different without it.
 
 ### Protocol A — selection-probe protocol
 
@@ -150,12 +181,8 @@ changed molecule quality.
 ### Protocol B — project standard eval
 
 200 molecules, 200 DDIM steps, `eta 1.0`, quadratic schedule, relax on, same
-snapshot — the protocol used for the other arms' headline rows (v5/v6).
-Artifacts: `outputs/eval_v8_live_std/`.
-
-200 molecules, 200 DDIM steps, `eta 1.0`, quadratic schedule, same snapshot
-(epoch 3940) — the protocol used for the other arms' headline rows (v5/v6).
-Artifacts: `outputs/eval_v8_live_std/`.
+snapshot (epoch 3940) — the protocol used for the other arms' headline rows
+(v5/v6). Artifacts: `outputs/eval_v8_live_std/`.
 
 | metric | value | 95 % CI | n |
 |---|---|---|---|
@@ -193,8 +220,8 @@ reported for the V6 arm, and both are labelled non-reportable by the harness.
 # live per-epoch tail
 grep "^Epoch " outputs/train_v8_probe_cont.log | tail -n 20
 
-# probe / save events (empty until epoch 4000)
-grep -inE "probe|quick_valid|Saved best" outputs/train_v8_probe_cont.log
+# probe / save events (epochs 4000, 4100, 4200, 4300)
+grep -inE "probe|quick_valid|Saved best|Test evaluation" outputs/train_v8_probe_cont.log
 
 # checkpoint fields
 .venv/bin/python -c "

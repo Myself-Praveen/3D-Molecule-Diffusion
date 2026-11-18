@@ -18,6 +18,11 @@ test:
 Both sides share the same reference, so the difference cancels any per-example
 difficulty offset that comes from the molecule itself rather than from the
 model.
+
+4. **Shared timestep per pair.** ``t`` is drawn once per pair, not per side.
+   Independent draws made the reward gap ~4x noisier (std 0.315 -> 0.083
+   measured on the V5 pair set), which is enough to keep ``-log sigmoid``
+   pinned at log 2 for a whole fine-tune.
 """
 
 from __future__ import annotations
@@ -150,6 +155,9 @@ def dpo_loss(
     ``reward = MSE_ref − MSE_model`` per graph; ``loss = −log σ(β Δreward)``
     with ``Δreward = reward_chosen − reward_rejected``. Returns a scalar tensor
     with gradient only w.r.t. ``model``.
+
+    Each pair is corrupted at a single shared timestep (see correction 4 below)
+    so the two rewards are compared at the same noise level.
     """
     if objective == "flow":
         raise ValueError(
@@ -158,9 +166,19 @@ def dpo_loss(
         )
     device = batch.chosen_pos.device
 
+    # 4. **One timestep per pair.** Both sides are corrupted at the *same* noise
+    #    level (``t`` is drawn once per pair and indexed through each side's own
+    #    graph ids). Drawing independent timesteps per side made the reward gap
+    #    ~4x noisier (measured std 0.315 -> 0.083 on the V5 pair set), and the
+    #    DPO logit ``beta * gap`` is small enough that the difference decides
+    #    whether the stage learns anything at all. Noise *realisations* still
+    #    differ per side: the two molecules have different atom counts.
+    t_pairs = torch.randint(
+        0, coord_ddpm.num_steps, (batch.num_pairs,), device=device
+    )
+
     def _denoise(pos, z, gbatch):
-        num_graphs = int(gbatch.max().item()) + 1
-        t = torch.randint(0, coord_ddpm.num_steps, (num_graphs,), device=device)
+        t = t_pairs[gbatch]
         noisy_pos, target = coord_ddpm.add_noise(pos, t, gbatch)
         edges = build_knn_graph(noisy_pos, gbatch, k=knn)
         # Mirror training: multi-scale models get their per-layer graphs too.

@@ -17,6 +17,8 @@ Usage:
 Strategies:
     seed_matched      same-seed rollouts at two guidance scales (default)
     valid_vs_invalid  one rollout, best valid molecules vs invalid clumps
+    composite         plan §5's 50/50 split of the two above (use this for the
+                      real run: N=400 gives 200 seed-matched + 200 topology)
 
 The output is the ``rl.pair_file`` consumed by ``train.py``.
 """
@@ -30,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+from rdkit import Chem
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -140,7 +143,15 @@ def main() -> int:
     parser.add_argument("--high_w", type=float, default=4.0)
     parser.add_argument("--low_w", type=float, default=0.0)
     parser.add_argument("--strategy", default="seed_matched",
-                        choices=["seed_matched", "valid_vs_invalid"])
+                        choices=["seed_matched", "valid_vs_invalid",
+                                 "composite"])
+    parser.add_argument("--oversample", type=float, default=1.0,
+                        help="Composite only: roll out this multiple of "
+                             "--num_pairs samples, then slice each half to "
+                             "num_pairs/2. Needed because the seed-matched "
+                             "builder discards pairs below the reward gap or "
+                             "whose chosen side failed RDKit construction "
+                             "(~60%% survive at high_w 4.0).")
     parser.add_argument("--min_reward_gap", type=float, default=0.1)
     parser.add_argument("--target_bonds", type=float, default=None,
                         help="Bond-count target for the reward "
@@ -162,7 +173,10 @@ def main() -> int:
     args = parser.parse_args()
 
     out_path = Path(args.out)
-    out_path.mkdir(parents=True, exist_ok=True)
+    # ``args.out`` is the pair *file*; only its parent is a directory. Calling
+    # mkdir on the file path itself creates a directory that the atomic save in
+    # ``save_preference_pairs`` then refuses to replace.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     target_bonds = (REFERENCE_BONDS_PER_MOL if args.target_bonds is None
                     else float(args.target_bonds))
@@ -214,11 +228,17 @@ def main() -> int:
         )
 
     n = int(args.num_pairs)
-    counts = _sample_atom_counts(histogram, n, rng)
+    # Composite needs enough rollouts to still yield num_pairs/2 per half after
+    # the builders drop rejected-by-criteria candidates; the other strategies
+    # honour num_pairs as-is.
+    rollout_n = n
+    if args.strategy == "composite" and args.oversample > 1.0:
+        rollout_n = int(round(n * float(args.oversample)))
+    counts = _sample_atom_counts(histogram, rollout_n, rng)
     all_samples: list[Sample] = []
     high_samples: list[Sample] = []
     low_samples: list[Sample] = []
-    for start in range(0, n, args.batch_size):
+    for start in range(0, rollout_n, args.batch_size):
         chunk = counts[start:start + args.batch_size]
         # Same seed for both rollouts => identical noise and atom counts.
         torch.manual_seed(args.seed + start // args.batch_size)
@@ -227,23 +247,48 @@ def main() -> int:
         pos_l, z_l = _rollout(chunk, args.low_w)
         high_samples += _samples(pos_h, z_h, 0, chunk)
         low_samples += _samples(pos_l, z_l, 0, chunk)
-        print(f"  rollout {min(start + len(chunk), n)}/{n}")
+        print(f"  rollout {min(start + len(chunk), rollout_n)}/{rollout_n}")
 
+    seed_pairs: list = []
+    topo_pairs: list = []
     if args.strategy == "seed_matched":
-        pairs = generate_seed_matched_pairs(
+        seed_pairs = generate_seed_matched_pairs(
             high_samples, low_samples, oracle, n_pairs=n,
             min_reward_gap=args.min_reward_gap, target_bonds=target_bonds,
         )
-    else:
+        pairs = seed_pairs
     elif args.strategy == "valid_vs_invalid":
-        pairs = generate_valid_vs_invalid_pairs(
+        topo_pairs = generate_valid_vs_invalid_pairs(
             low_samples + high_samples, oracle, n_pairs=n,
             target_bonds=target_bonds,
         )
+        pairs = topo_pairs
+    elif args.strategy == "composite":
+        # Plan §5: a 50/50 composite — half the pairs teach the property
+        # objective (guidance), half teach topology (valid vs clump). Either
+        # strategy alone over-fits to one objective.
+        n_seed = n // 2
+        n_topo = n - n_seed
+        # ``n_pairs`` passed to each builder is the *quota*, so oversampling is
+        # what lets both halves actually reach it.
+        seed_pairs = generate_seed_matched_pairs(
+            high_samples, low_samples, oracle, n_pairs=n_seed,
+            min_reward_gap=args.min_reward_gap, target_bonds=target_bonds,
+        )
+        topo_pairs = generate_valid_vs_invalid_pairs(
+            low_samples + high_samples, oracle, n_pairs=n_topo,
+            target_bonds=target_bonds,
+        )
+        print(f"  composite: {len(seed_pairs)} seed-matched "
+              f"+ {len(topo_pairs)} valid-vs-invalid (quota {n_seed}+{n_topo})")
+        if len(seed_pairs) < n_seed or len(topo_pairs) < n_topo:
+            print(f"  ! short of quota — raise --oversample (got "
+                  f"{len(seed_pairs)}/{n_seed} and {len(topo_pairs)}/{n_topo})")
+        pairs = seed_pairs + topo_pairs
     else:
         raise ValueError(
             f"Unknown strategy={args.strategy!r} "
-            f"(expected 'seed_matched' or 'valid_vs_invalid')"
+            f"(expected 'seed_matched', 'valid_vs_invalid' or 'composite')"
         )
 
     if not pairs:
@@ -257,6 +302,38 @@ def main() -> int:
     stats["mean_sample_reward_low_w"] = float(np.mean([
         sample_reward(s, oracle, target_bonds) for s in low_samples
     ]))
+    # Per-side validity: the pairing only teaches the intended direction if the
+    # high-w rollout is actually the better one. Recorded so a run where
+    # guidance *hurts* is visible in the artifact instead of only in the margin.
+    stats["invalid_fraction_high_w"] = float(np.mean([
+        s.mol is None for s in high_samples
+    ]))
+    stats["invalid_fraction_low_w"] = float(np.mean([
+        s.mol is None for s in low_samples
+    ]))
+    stats["fragmented_fraction_high_w"] = float(np.mean([
+        s.mol is not None and len(Chem.GetMolFrags(s.mol)) > 1
+        for s in high_samples
+    ]))
+    stats["fragmented_fraction_low_w"] = float(np.mean([
+        s.mol is not None and len(Chem.GetMolFrags(s.mol)) > 1
+        for s in low_samples
+    ]))
+
+    # Gate G3 reads the *margin* (chosen − rejected), per half and overall.
+    stats["mean_reward_margin"] = float(np.mean([
+        p.reward_chosen - p.reward_rejected for p in pairs
+    ]))
+    stats["n_seed_matched"] = float(len(seed_pairs))
+    stats["n_valid_vs_invalid"] = float(len(topo_pairs))
+    stats["mean_reward_margin_seed_matched"] = (
+        float(np.mean([p.reward_chosen - p.reward_rejected for p in seed_pairs]))
+        if seed_pairs else 0.0
+    )
+    stats["mean_reward_margin_valid_vs_invalid"] = (
+        float(np.mean([p.reward_chosen - p.reward_rejected for p in topo_pairs]))
+        if topo_pairs else 0.0
+    )
     stats["valence_weight"] = args.valence_weight
     stats["valence_enabled"] = bool(args.valence_enabled)
     stats["valence_start_frac"] = args.valence_start_frac

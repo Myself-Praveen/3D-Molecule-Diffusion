@@ -768,3 +768,116 @@ depends on untracked local artifacts, so any claim tied to a *particular epoch* 
 tied to `best.pt`; (b) per §15 item 8 (the mistyped `checkpoint.dir`), destructive maintenance on
 this tree belongs behind a dry run that prints the keep-list before anything is removed — a
 `DRY_RUN=1` pass would have shown an empty keep-list immediately.
+
+## 18. RL/DPO stage on V5 (contract `bbb-valence-dpo-v2.1`, Phases 2–4) — executed, gates measured
+
+**It had never run.** `scripts/build_rl_pairs.py` raised `IndentationError` at import (a stray
+`else:` before the seed-matching branch), so `outputs/rl_pairs/` did not exist and no DPO arm had
+ever been trained. A second blocker sat behind it: the atomic write called
+`out_path.mkdir(parents=True, exist_ok=True)`, which created a *directory* named `bbbp_pairs.pt`
+and then failed on `rename(_smoke.pt.tmp -> _smoke.pt)` with `IsADirectoryError`. Both fixed
+(`out_path.parent.mkdir(...)`).
+
+**Pair construction (Phase 2).** Added the plan's 50/50 `composite` strategy plus an
+`--oversample` multiplier: the seed-matched branch drops ~38% of candidates (reward gap, or a
+chosen side that is itself invalid), so a 1.9x oversample was needed to land exactly 200 + 200.
+`outputs/rl_pairs/bbbp_pairs.pt`, 760 rollouts, 50 DDIM steps, seed 42, w=4.0/0.0 per the plan.
+
+| G3 statistic | value | threshold |
+|---|---|---|
+| N pairs | 400 (200 seed-matched + 200 valid-vs-invalid) | 400 |
+| mean reward margin | **1.3795** | >= 0.60 |
+| margin, seed-matched half | 1.1862 | — |
+| margin, topology half | 1.5728 | — |
+| mean reward chosen / rejected | 0.4874 / -0.8921 | — |
+| rejected side invalid | 91.75% | — |
+
+**G3: PASS.** But the pair pool records a finding that contradicts the plan's premise
+(`high_w` is supposed to be the *better* guidance scale): `invalid_fraction_high_w 0.729` vs
+`low_w 0.628`, `mean_sample_reward_high_w -0.623` vs `low_w -0.482`. Guidance at w=4.0 is *worse*
+than no guidance on V5, so the seed-matched half teaches "prefer the less-broken rollout of the
+same latent" rather than "prefer guided chemistry". The pairs remain valid DPO signal — the two
+sides are assigned by measured reward, not by which arm produced them — but the plan's
+sign convention is inverted for this model.
+
+**Three DPO arms (Phase 3), each stopped by a measurement rather than by budget:**
+
+1. `configs/central_v5_bbb_rl.yaml`, **lr 1e-5** (the plan's): destructive. One epoch moved the
+   geometry heads (`coord_mlp`, `refine_layers`) 1.3e-3 in relative weight norm — 50x the V5 tail
+   lr — and val_pos went 0.60 -> 0.98 while the generation probe's connectivity fell to 0.0%.
+   Abandoned after epoch 1.
+2. `configs/central_v5_bbb_rl_lowlr.yaml`, **lr 1e-6, beta 0.05, 30 epochs**: safe but inert.
+   `dpo=0.6930` for every epoch — log 2 — i.e. the logit `beta * gap` never left 0.
+3. `configs/central_v5_bbb_rl_beta5.yaml`, **lr 1e-6, beta 5.0, 30 epochs**: learns. Loss fell
+   0.6930 -> 0.6585, and the fraction of pairs whose chosen side now scores better is 62.7%
+   (mean gap +0.043 +/- 0.028 s.e.).
+
+Two corrections in `src/rl/dpo.py` came out of arm 2, and both are measured, not guessed:
+
+- **beta is unit-dependent.** The textbook 0.05 assumes a reward in log-prob-ratio units. This
+  implementation's implicit reward is a *difference of MSEs*, so an achievable gap of ~0.2 gives
+  `beta*gap ~ 5e-4` and `-log sigmoid` sits at log 2 forever. beta=5 puts that gap at a logit of
+  ~1.0. Arm 2 is the direct measurement of this (loss 0.6930 x 30 epochs); arm 3 is the control
+  that varies beta alone.
+- **one timestep per pair, not per side.** Drawing `t` independently for the two sides made the
+  reward gap ~3.8x noisier (std 0.315 -> 0.083 measured over 256 pairs), which alone can hold the
+  loss at log 2. `dpo_loss` now draws `t` once per pair and indexes it through each side's graph
+  ids; noise *realisations* still differ because the two molecules have different atom counts.
+
+**Gate G4 (Phase 4).** Identical protocol on all three checkpoints: N=400, 200 DDIM steps,
+eta=1.0, `--relax --steric_enabled --valence_enabled --valence_weight 0.5`, seed 42. Run *without*
+`--keep_largest_fragment` — collapsing to the largest fragment sets ConnectedFrac to 100% by
+construction and would make the gate unfalsifiable; the curated pharmacology numbers can be
+re-derived from the saved SDFs.
+
+| metric | pre-RL V5 `best.pt` | DPO beta 0.05 | DPO beta 5.0 |
+|---|---|---|---|
+| Validity % (95% CI) | 44.25 (39.5-49.1) | 48.25 (43.4-53.1) | **56.00 (51.1-60.8)** |
+| ConnectedValidity % (95% CI) | 10.50 (7.86-13.9) | 13.50 (10.5-17.2) | 13.50 (10.5-17.2) |
+| ConnectedFrac (single-fragment) % | 23.73 | 27.98 | 24.11 |
+| FragmentsPerMol | 5.85 | 4.90 | 5.92 |
+| n_valid / 400 | 177 | 193 | 224 |
+| Uniqueness / Novelty % | 100 / 100 | 100 / 100 | 100 / 100 |
+| QED | 0.5608 | 0.5629 | 0.5518 |
+| LogP | 1.808 | 1.824 | 1.830 |
+| Lipinski % | 94.35 | 94.30 | 91.96 |
+| Veber % | 68.93 | 69.43 | 62.50 |
+| CNS_MPO | 2.960 | 3.054 | 2.959 |
+| SNN to BBBP | 0.1791 | 0.1844 | 0.1796 |
+| ScaffDiv / IntDiv_p | 0.8983 / 0.8813 | 0.9016 / 0.8786 | 0.8795 / 0.8775 |
+| ScaffCov | 0.0033 | 0.0033 | 0.0033 |
+| BBB% (raw cohort, 95% CI) | 40.68 (33.7-48.0) | 39.90 (33.2-46.9) | 34.82 (28.9-41.3) |
+| **BBB_yield%** (BBB over valid) | 18.00 (14.5-22.1) | 19.25 (15.7-23.4) | **19.50 (15.9-23.7)** |
+| n_bbb | 72 | 77 | 78 |
+| BondsPerMol | 38.88 | 39.54 | 40.24 |
+| BondsPerAtom (relative) | 0.933 (0.899) | 0.957 (0.921) | 0.933 (0.899) |
+| MeanAtoms (requested) | 41.66 (46.97) | 41.34 (46.97) | 43.13 (46.97) |
+| NN_Outside % | 6.60 | 5.16 | 5.53 |
+| Rg (A) | 3.912 | 3.806 | 3.958 |
+| SizeMatch_KS | 0.0 | 0.0 | 0.0 |
+
+**G4a (ConnV >= 25%, single-fragment >= 45%): FAIL. G4b (>= 20%, >= 35%): FAIL.** Best arm is
+13.5% / 24.1%. Against the pre-RL baseline, the only change that survives a two-proportion test is
+validity (44.25% -> 56.00%, z=+3.32, p=0.0009); connected validity (+3.0 pp) is not significant
+(p=0.19) and single-fragment is flat inside the +/-3.4 pp CI at n=400.
+
+The beta-5.0 arm's **BBB% fall (40.68 -> 34.82) is a denominator effect, not a property loss.**
+`BBB_yield%` — BBB-active molecules among the *valid* ones — rises 18.00 -> 19.50% and `n_bbb`
+rises 72 -> 78. More molecules survive valence perception, so the raw cohort statistic is diluted
+by molecules that used to be counted invalid; reading BBB% against a fixed 400-molecule cohort
+across arms with different validity rates compares two different populations. The metric that
+does genuinely not move is topology: still ~5.9 fragments per molecule at 40.2 bonds/molecule. So the RL stage *does* what a denoiser-level preference loss
+can do — more molecules survive valence perception — and does not fix the topology failure that
+the gate is about. The plan's own bond-geometry axis (BondsPerMol ~39 vs target ~27) remains the
+unaddressed defect: DPO over these pairs cannot move a metric that the reward never sees.
+
+**Caveats.** n=400 single seed, so the CI on ConnV is roughly +/-3.4 pp and the arms are not
+paired at the molecule level (identical sampling seed, different weights). Val loss is unusable as
+a selection signal in this regime: it jumps between 0.68 and 3.3 across consecutive epochs at
+constant training loss, because it is a plain MSE at random timesteps — arm 3's `best.pt` is
+therefore an arbitrary epoch, and G4 is measured on `last.pt` as the plan specifies.
+
+Artifacts: `outputs/rl_pairs/{bbbp_pairs.pt,build.log}`,
+`checkpoints/central_v5_bbb_rl*/`, `outputs/eval_v5_{prerl_g4,dpo_g4,dpo_beta5_g4}/`,
+`outputs/train_v5_rl{,_lowlr,_beta5}.log`. `configs/central_v5_bbb.yaml` and
+`checkpoints/central_v5_bbb/` are untouched, so the pre-RL arm stays reproducible.
